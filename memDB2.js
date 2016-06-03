@@ -14,13 +14,24 @@ function guid() {
 
 class MemDbController {
 	constructor() {
-
+		this._databases = {};
 	}
 	
-	addMemDb() {
+	_regMemDb(db) {
+		this._databases[db.getGuid()];
 	}
 	
-	//subscribeRoot(
+	_subscribeRoots(subDb,parentRootGuids,done) {
+		var parentDb = this._database[subDb.getParentGuid()];
+		var newData = {};
+		for (var i=0; i<parentRootGuids.length; i++) {
+			var root = parentDb.getRoot(parentRootGuids[i]);
+			root._subscribe(subDb.getGuid());
+			for (var i in root._data) 
+				newData[i] = root._data[i];
+			new RootDb(subDb,newData,parentRootGuids[i],root.getVersion());
+		}
+	}
 	
 	
 }
@@ -29,27 +40,40 @@ class MemDbController {
 
 class MemDatabase {
 	constructor(controller, parentDbGuid) {
-		this.controller = controller;
-		this.parentDbGuid = parentDbGuid;
+		this._controller = controller;
+		this._parentDbGuid = parentDbGuid;
 		this._dbGuid = guid();
-		this.version = 1;
-		this.roots = [];
+		this._version = 1;
+		this._roots = [];
+		controller._regMemDb(this);
 	}
 	
 	// подписать на руты мастер базы. Руты приходят в виде дельты
-	_subscribeRoots(rootGuids, done) {
+	subscribeRoots(rootGuids, done) {
+		this._controller._subscribeRoots(this,rootGuids,done);
 	}
 	
 	_unsubscribeRoots(rootGuids, done) {
 	}
 	
+	// мастер рут
+	addMasterRoot(data) {
+		var r = new RootDb(this,data);
+		this._roots.push(r);		
+		return r;
+	}
+	
 	_addRoot() {
 		var r = new RootDb(this);
-		this.roots.push(r);
+		this._roots.push(r);
 	}
 	
 	getGuid() {
 		return this._dbGuid;
+	}
+	
+	getParentGuid() {
+		return this._parentDbGuid;
 	}
 	
 	getRoot(id) {
@@ -65,19 +89,41 @@ class MemDatabase {
 
 class RootDb {
 	constructor(db, data, parentGuid, parentVersion) {
-		this.db = db;
-		this.parentGuid = parentGuid;
-		this.data = {};
+		this._db = db;
+		this._subscribers = {};
+		this._data = {};
 		if (data) 
-			for (var elem in data) this.data[elem] = data[elem];	
+			for (var elem in data) this._data[elem] = data[elem];	
 		
-		if (parentGuid)  
-			this.parentVersion = parentVersion;
+		if (parentGuid)  {
+			this._parentVersion = parentVersion;
+			this._isMaster = false;
+			this._guid = parentGuid;
+		}
+		else {
+			this._isMaster = true;
+			this._guid = guid();
+		}
 	}
 	
 	isMaster() {
-		if (this.parentGuid) return false;
-		else return true;
+		return this._isMaster;
+	}
+	
+	getGuid() {
+		return this._guid;
+	}
+	
+	getVersion() {
+		if (this.isMaster())
+			return this._db.getVersion();
+		else
+			return this._parentVersion;
+	}
+	
+	_subscribe(dbGuid) {
+		//todo проверить что в списке подписчиков БД
+		this._subscribers[dbGuid] = true;
 	}
 	
 }
@@ -125,6 +171,9 @@ var chld1_1 = new MemDatabase(controller,master.getGuid());
 var chld1_2 = new MemDatabase(controller,master.getGuid());
 var chld2_1 = new MemDatabase(controller,chld1_1.getGuid());
 var chld2_2 = new MemDatabase(controller,chld1_1.getGuid());
+
+var r1 = master.addMasterRoot({1: 34, 2: 99 });
+chld1_1.subscribeRoots([r1.getGuid()]);
 
 /*
 var o = {};

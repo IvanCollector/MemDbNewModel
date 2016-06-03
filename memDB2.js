@@ -48,7 +48,7 @@ class MemDatabase {
 		controller._regMemDb(this);
 	}
 	
-	// подписать на руты мастер базы. Руты приходят в виде дельты
+	// РїРѕРґРїРёСЃР°С‚СЊ РЅР° СЂСѓС‚С‹ РјР°СЃС‚РµСЂ Р±Р°Р·С‹. Р СѓС‚С‹ РїСЂРёС…РѕРґСЏС‚ РІ РІРёРґРµ РґРµР»СЊС‚С‹
 	subscribeRoots(rootGuids, done) {
 		this._controller._subscribeRoots(this,rootGuids,done);
 	}
@@ -56,7 +56,7 @@ class MemDatabase {
 	_unsubscribeRoots(rootGuids, done) {
 	}
 	
-	// мастер рут
+	// РјР°СЃС‚РµСЂ СЂСѓС‚
 	addMasterRoot(data) {
 		var r = new RootDb(this,data);
 		this._roots.push(r);		
@@ -122,7 +122,7 @@ class RootDb {
 	}
 	
 	_subscribe(dbGuid) {
-		//todo проверить что в списке подписчиков БД
+		//todo РїСЂРѕРІРµСЂРёС‚СЊ С‡С‚Рѕ РІ СЃРїРёСЃРєРµ РїРѕРґРїРёСЃС‡РёРєРѕРІ Р‘Р”
 		this._subscribers[dbGuid] = true;
 	}
 	
@@ -157,16 +157,16 @@ class ClientData extends DataObject {
 	}
 }
 /*
-- создать контроллер
-- создать мастер-базу
-- создать мастер-руты в базе
-- создать подписанную базу
-- создать подписанные руты в базе
+- СЃРѕР·РґР°С‚СЊ РєРѕРЅС‚СЂРѕР»Р»РµСЂ
+- СЃРѕР·РґР°С‚СЊ РјР°СЃС‚РµСЂ-Р±Р°Р·Сѓ
+- СЃРѕР·РґР°С‚СЊ РјР°СЃС‚РµСЂ-СЂСѓС‚С‹ РІ Р±Р°Р·Рµ
+- СЃРѕР·РґР°С‚СЊ РїРѕРґРїРёСЃР°РЅРЅСѓСЋ Р±Р°Р·Сѓ
+- СЃРѕР·РґР°С‚СЊ РїРѕРґРїРёСЃР°РЅРЅС‹Рµ СЂСѓС‚С‹ РІ Р±Р°Р·Рµ
 
 */
 
-var controller = new MemDbController();		// создаем контроллер базы
-var master = new MemDatabase(controller);  	// создаем корневую базу
+var controller = new MemDbController();		// СЃРѕР·РґР°РµРј РєРѕРЅС‚СЂРѕР»Р»РµСЂ Р±Р°Р·С‹
+var master = new MemDatabase(controller);  	// СЃРѕР·РґР°РµРј РєРѕСЂРЅРµРІСѓСЋ Р±Р°Р·Сѓ
 var chld1_1 = new MemDatabase(controller,master.getGuid());
 var chld1_2 = new MemDatabase(controller,master.getGuid());
 var chld2_1 = new MemDatabase(controller,chld1_1.getGuid());

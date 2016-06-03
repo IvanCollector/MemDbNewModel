@@ -27,8 +27,10 @@
 
     $("window").ready(function() {
         $(".all").height($(window).height() - 16);
+        $(".db-container").height($(".all").height() - 65);
         $(window).resize(function() {
             $(".all").height($(window).height() - 16);
+            $(".db-container").height($(".all").height() - 65);
         });
 
 
@@ -67,14 +69,14 @@
                 dbInfo.level = masterInfo.level + 1;
                 if (!levels[dbInfo.level]) {
                     levels[dbInfo.level] = {
-                        x: masterInfo.element.offset().left,
+                        x: masterInfo.element.offset().left - 8,
                         y: levels[dbInfo.level - 1].y + levels[dbInfo.level - 1].h,
                         h: 0
                     }
                 }
             }
 
-            dbInfo.element.offset({ top: levels[dbInfo.level].y, left: levels[dbInfo.level].x});
+            dbInfo.element.css({ top: levels[dbInfo.level].y + "px", left: levels[dbInfo.level].x + "px"});
             levels[dbInfo.level].x += cellWidth;
             //dbInfo.element.css("margin-left", (dbInfo.level * 16) + "px");
             dbInfo.element.children("[role='id']").find(".readonly-value").text(dbMetaInfo.id);

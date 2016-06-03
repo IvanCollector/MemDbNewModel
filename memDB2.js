@@ -191,7 +191,9 @@ var chld2_1 = new MemDatabase(controller,chld1_1.getGuid());
 var chld2_2 = new MemDatabase(controller,chld1_1.getGuid());
 
 var r1 = master.addMasterRoot({1: 34, 2: 99 });
-chld1_1.subscribeRoots([r1.getGuid()]);
+var r1_1 = chld1_1.subscribeRoots([r1.getGuid()]);
+var r1_2 = chld1_1.addMasterRoot({ 2: 1, 3: 3, 4: 5});
+var r2_1 = chld2_1.subscribeRoots([r1_1.getGuid()]);
 for (var i=0; i<6; i++) 
 	console.log(" ",i," ",chld1_1.getRoot(r1.getGuid()).getData(i));
 

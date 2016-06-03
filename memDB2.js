@@ -18,17 +18,20 @@ class MemDbController {
 	}
 	
 	_regMemDb(db) {
-		this._databases[db.getGuid()];
+		this._databases[db.getGuid()] = db;
 	}
 	
 	_subscribeRoots(subDb,parentRootGuids,done) {
-		var parentDb = this._database[subDb.getParentGuid()];
+		var parentDb = this._databases[subDb.getParentGuid()];
 		var newData = {};
 		for (var i=0; i<parentRootGuids.length; i++) {
 			var root = parentDb.getRoot(parentRootGuids[i]);
 			root._subscribe(subDb.getGuid());
-			for (var i in root._data) 
-				newData[i] = root._data[i];
+			for (var j=0; j<6; j++) {
+				var v = root.getData(j);
+				if (v) newData[j] = v;
+			} 
+				
 			new RootDb(subDb,newData,parentRootGuids[i],root.getVersion());
 		}
 	}
@@ -44,7 +47,7 @@ class MemDatabase {
 		this._parentDbGuid = parentDbGuid;
 		this._dbGuid = guid();
 		this._version = 1;
-		this._roots = [];
+		this._roots = {};
 		controller._regMemDb(this);
 	}
 	
@@ -53,20 +56,15 @@ class MemDatabase {
 		this._controller._subscribeRoots(this,rootGuids,done);
 	}
 	
-	_unsubscribeRoots(rootGuids, done) {
+	unsubscribeRoots(rootGuids, done) {
 	}
 	
 	// мастер рут
 	addMasterRoot(data) {
-		var r = new RootDb(this,data);
-		this._roots.push(r);		
+		var r = new RootDb(this,data);	
 		return r;
 	}
 	
-	_addRoot() {
-		var r = new RootDb(this);
-		this._roots.push(r);
-	}
 	
 	getGuid() {
 		return this._dbGuid;
@@ -76,7 +74,8 @@ class MemDatabase {
 		return this._parentDbGuid;
 	}
 	
-	getRoot(id) {
+	getRoot(guid) {
+		return this._roots[guid];
 	}
 	
 	rootCount() {
@@ -84,6 +83,13 @@ class MemDatabase {
 	
 	getVersion() {
 	}
+
+
+	// зарегистрировать новый рут в базе
+	_regRoot(root) {
+		this._roots[root.getGuid()] = root;
+	}
+
 	
 }
 
@@ -104,6 +110,8 @@ class RootDb {
 			this._isMaster = true;
 			this._guid = guid();
 		}
+
+		db._regRoot(this);
 	}
 	
 	isMaster() {
@@ -120,11 +128,21 @@ class RootDb {
 		else
 			return this._parentVersion;
 	}
-	
+
+	// чтение / запись данных в вектор рута
+	getData(idx) {
+		return this._data[idx];
+	}
+
+	setData(idx, value) {
+		this._data[idx] = value;
+	}
+
 	_subscribe(dbGuid) {
 		//todo проверить что в списке подписчиков БД
 		this._subscribers[dbGuid] = true;
 	}
+
 	
 }
 
@@ -174,6 +192,10 @@ var chld2_2 = new MemDatabase(controller,chld1_1.getGuid());
 
 var r1 = master.addMasterRoot({1: 34, 2: 99 });
 chld1_1.subscribeRoots([r1.getGuid()]);
+for (var i=0; i<6; i++) 
+	console.log(" ",i," ",chld1_1.getRoot(r1.getGuid()).getData(i));
+
+
 
 /*
 var o = {};

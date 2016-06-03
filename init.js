@@ -121,6 +121,7 @@
                 var dbNextInfo = dbMeta.databases[i];
                 if (dbNextInfo.master === undefined || dbNextInfo.master != dbMetaInfo.id) continue;
                 renderDatabase(dbNextInfo);
+                levels[dbInfo.level].x = levels[databases[dbNextInfo.id].level].x;
             }
         }
     });

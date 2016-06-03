@@ -3,6 +3,7 @@
  */
 
 (function ($) {
+    var cellWidth = 334;
     var dbTemplate =
         '<div class="fields-container database">' +
         '   <div><h2 class="header">Database</h2><input type="button" value="Start"/><input type="button" value="Commit"/><input type="button" value="Rollback"/></div>' +
@@ -33,13 +34,18 @@
 
 
         var databases = {};
+        var levels = {};
 
         renderAllDatabases();
 
 
         function renderAllDatabases() {
+            levels = {};
+            levels[0] = {x: 8, y: 8, h: 0};
+
             for (var i = 0; i < dbMeta.databases.length; i++) {
                 var dbMetaInfo = dbMeta.databases[i];
+                if (dbMetaInfo.master !== undefined && dbMetaInfo.master != null) continue;
                 renderDatabase(dbMetaInfo);
             }
         }
@@ -59,8 +65,18 @@
             if (dbMetaInfo.master !== undefined && dbMetaInfo.master != null) {
                 var masterInfo = databases[dbMetaInfo.master];
                 dbInfo.level = masterInfo.level + 1;
+                if (!levels[dbInfo.level]) {
+                    levels[dbInfo.level] = {
+                        x: masterInfo.element.offset().left,
+                        y: levels[dbInfo.level - 1].y + levels[dbInfo.level - 1].h,
+                        h: 0
+                    }
+                }
             }
-            dbInfo.element.css("margin-left", (dbInfo.level * 16) + "px");
+
+            dbInfo.element.offset({ top: levels[dbInfo.level].y, left: levels[dbInfo.level].x});
+            levels[dbInfo.level].x += cellWidth;
+            //dbInfo.element.css("margin-left", (dbInfo.level * 16) + "px");
             dbInfo.element.children("[role='id']").find(".readonly-value").text(dbMetaInfo.id);
             dbInfo.element.children("[role='name']").find(".readonly-value").text(dbMetaInfo.name);
             dbInfo.element.children("[role='master']").find(".readonly-value").text(dbMetaInfo.master ? dbMetaInfo.master : "null");
@@ -97,6 +113,14 @@
                         dataEl.find("input").val(data);
                     }
                 }
+            }
+
+            if (levels[dbInfo.level].h < dbInfo.element.height() + 28) levels[dbInfo.level].h = dbInfo.element.height() + 28;
+
+            for (var i = 0; i < dbMeta.databases.length; i++) {
+                var dbNextInfo = dbMeta.databases[i];
+                if (dbNextInfo.master === undefined || dbNextInfo.master != dbMetaInfo.id) continue;
+                renderDatabase(dbNextInfo);
             }
         }
     });

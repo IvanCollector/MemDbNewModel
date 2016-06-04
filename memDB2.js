@@ -24,6 +24,7 @@ class MemDbController {
 	_subscribeRoots(subDb,parentRootGuids,done) {
 		var parentDb = this._databases[subDb.getParentGuid()];
 		var newData = {};
+		var res = [];
 		for (var i=0; i<parentRootGuids.length; i++) {
 			var root = parentDb.getRoot(parentRootGuids[i]);
 			root._subscribe(subDb.getGuid());
@@ -32,8 +33,9 @@ class MemDbController {
 				if (v) newData[j] = v;
 			} 
 				
-			new RootDb(subDb,newData,parentRootGuids[i],root.getVersion());
+			res.push(new RootDb(subDb,newData,parentRootGuids[i],root.getVersion()));
 		}
+		return res;
 	}
 	
 	
@@ -53,7 +55,16 @@ class MemDatabase {
 	
 	// подписать на руты мастер базы. Руты приходят в виде дельты
 	subscribeRoots(rootGuids, done) {
-		this._controller._subscribeRoots(this,rootGuids,done);
+	
+		//this._controller._subscribeRoots(this,rootGuids,done);
+		var that = this;
+		return new Promise( function(accept, reject) {
+			// эмулируем удаленный вызов
+			console.log("PROMISE FNU");
+			setTimeout( function() { 
+				var res = that._controller._subscribeRoots(that,rootGuids); 
+				accept(res); }, 100);	
+		});
 	}
 	
 	unsubscribeRoots(rootGuids, done) {
@@ -191,22 +202,14 @@ var chld2_1 = new MemDatabase(controller,chld1_1.getGuid());
 var chld2_2 = new MemDatabase(controller,chld1_1.getGuid());
 
 var r1 = master.addMasterRoot({1: 34, 2: 99 });
-var r1_1 = chld1_1.subscribeRoots([r1.getGuid()]);
+
+var p1 = chld1_1.subscribeRoots([r1.getGuid()])
+	.then( function(res) {
+		return chld2_1.subscribeRoots([r1.getGuid()]); })
+	.then( function(res) {
+		for (var i=0; i<6; i++) 
+			console.log(" ",i," ",chld1_1.getRoot(r1.getGuid()).getData(i));
+		});
+
+
 var r1_2 = chld1_1.addMasterRoot({ 2: 1, 3: 3, 4: 5});
-var r2_1 = chld2_1.subscribeRoots([r1_1.getGuid()]);
-for (var i=0; i<6; i++) 
-	console.log(" ",i," ",chld1_1.getRoot(r1.getGuid()).getData(i));
-
-
-
-/*
-var o = {};
-var myobj = new ClientData("VENIK");
-var p = Object.getPrototypeOf(myobj);
-
-p.get();
-o.x = 1;
-*/
-//alert(p.clientbu());
-
-//myobj.get();

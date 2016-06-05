@@ -36,9 +36,15 @@
 
 
         var databases = {};
+        var dbGuids = {};
+        var dbRootsByGuids = {};
         var levels = {};
 
+        var controller2 = new MemDbController();
+
         renderAllDatabases();
+
+        createAllRoots();
 
 
         function renderAllDatabases() {
@@ -55,13 +61,24 @@
         function renderDatabase(dbMetaInfo) {
             var body = $(".db-container");
             var dbInfo = databases[dbMetaInfo.id];
+
             if (!dbInfo) {
                 var dbEl = $(dbTemplate);
                 dbEl.attr("id", "db-" + dbMetaInfo.id);
                 body.append(dbEl);
                 dbInfo = {};
+                dbInfo.id = dbMetaInfo.id;
                 databases[dbMetaInfo.id] = dbInfo;
                 dbInfo.element = dbEl;
+
+                var dbObj;
+                if (dbMetaInfo.master !== undefined && dbMetaInfo.master != null) {
+                    var masterInfo = databases[dbMetaInfo.master];
+                    dbInfo.database = new MemDatabase(controller2,masterInfo.database.getGuid());
+                } else
+                    dbInfo.database = new MemDatabase(controller2);
+
+                dbGuids[dbInfo.database.getGuid] = dbInfo;
             }
             dbInfo.level = 0;
             if (dbMetaInfo.master !== undefined && dbMetaInfo.master != null) {
@@ -124,6 +141,45 @@
                 if (dbNextInfo.master === undefined || dbNextInfo.master != dbMetaInfo.id) continue;
                 renderDatabase(dbNextInfo);
                 levels[dbInfo.level].x = levels[databases[dbNextInfo.id].level].x;
+            }
+        }
+
+        function createAllRoots() {
+            for (var i = 0; i < dbMeta.databases.length; i++) {
+                var dbMetaInfo = dbMeta.databases[i];
+                var dbInfo = databases[dbMetaInfo.id];
+                for (var j = 0; j < dbMetaInfo.roots.length; j++) {
+                    var rootInfo = dbMetaInfo.roots[j];
+                    if (!rootInfo.master) continue;
+                    var mr = dbInfo.database.addMasterRoot(rootInfo.data);
+                    dbRootsByGuids[mr.getGuid()] = { root: mr, dbInfo: dbInfo, id: rootInfo.id};
+                }
+            }
+
+            createAllSlaves();
+        }
+
+        function createAllSlaves(masterRootInfo) {
+            if (!masterRootInfo) {
+                for (var mrGuid in dbRootsByGuids) {
+                    var rootInfo = dbRootsByGuids[mrGuid];
+                    createAllSlaves(rootInfo);
+                }
+            } else {
+                var masterDbInfo = masterRootInfo.dbInfo;
+                for (var i = 0; i < dbMeta.databases.length; i++) {
+                    var dbMetaInfo = dbMeta.databases[i];
+                    if (dbMetaInfo.master === undefined || dbMetaInfo.master != masterDbInfo.id) continue;
+                    for (var j = 0; j < dbMetaInfo.roots.length; j++) {
+                        var rootInfo = dbMetaInfo.roots[j];
+                        if (!rootInfo.master) continue;
+                        var dbInfo = databases[dbMetaInfo.id];
+                        dbInfo.database.subscribeRoots([masterRootInfo.root.getGuid()]).then(function(res) {
+                            var newRootInfo = { root: res[0], dbInfo: dbInfo, id: rootInfo.id};
+                            createAllSlaves(newRootInfo);
+                        });
+                    }
+                }
             }
         }
     });

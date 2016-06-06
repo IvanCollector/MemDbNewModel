@@ -11,7 +11,7 @@ function guid() {
 }
 
 
-
+// todo контроллеры также надо упорядочить в дерево
 class MemDbController {
 	constructor() {
 		this._databases = {};
@@ -21,24 +21,47 @@ class MemDbController {
 		this._databases[db.getGuid()] = db;
 	}
 	
-	_subscribeRoots(subDb,parentRootGuids,done) {
-		var parentDb = this._databases[subDb.getParentGuid()];
-		var newData = {};
-		var res = [];
-		for (var i=0; i<parentRootGuids.length; i++) {
-			var root = parentDb.getRoot(parentRootGuids[i]);
-			root._subscribe(subDb.getGuid());
-			for (var j=0; j<6; j++) {
-				var v = root.getData(j);
-				if (v) newData[j] = v;
-			} 
-				
-			res.push(new RootDb(subDb,newData,parentRootGuids[i],root.getVersion()));
-		}
+	_receiveDeltas(deltas) {
+	}
+	
+	// сюда входит вызов на стороне парента
+	_subscribeRootsParentSide(subDbGuid, parentDbGuid,rootGuids) {
+		var parentDb = this._databases[parentDbGuid];
+		var res =  parentDb._subscribeRootsParentSide(subDbGuid,rootGuids);
+		parentDb._genSendDeltas(); // сгенерировать и послать дельты после подписки
 		return res;
 	}
 	
+	// подписка субДБ на руты, возвращает промис
+	_subscribeRoots(subDb,rootGuids) {
+		var that = this;
+		console.log("MemController._subscribeRoots");
+		return new Promise( function(accept, reject) {
+			// эмулируем удаленный вызов чере асинхронный таймаут
+			setTimeout( function() { 
+				var res = that._subscribeRootsParentSide(subDb.getGuid(),subDb.getParentGuid(),rootGuids); 
+				accept(res); }, 0);	
+		});				
+	}	
 	
+	// послать deltas, которые сгенерированны для db подписчикам
+	_sendDeltas(dbGuid,deltas) {
+		var that = this;
+		console.log("MemController._sendDeltas");
+		
+		
+		/*
+		return new Promise( function(accept, reject) {
+				// эмулируем удаленный вызов
+				setTimeout( function() { 
+					var db = that._databases[dbGuid];
+					var res = db._applyDeltas(deltas);
+					accept(res); }, 0);	
+			});	
+			*/
+					var db = that._databases[dbGuid];
+					var res = db._applyDeltas(deltas);
+	}
 }
 
 
@@ -53,19 +76,7 @@ class MemDatabase {
 		controller._regMemDb(this);
 	}
 	
-	// подписать на руты мастер базы. Руты приходят в виде дельты
-	subscribeRoots(rootGuids, done) {
-	
-		//this._controller._subscribeRoots(this,rootGuids,done);
-		var that = this;
-		return new Promise( function(accept, reject) {
-			// эмулируем удаленный вызов
-			console.log("PROMISE FNU");
-			setTimeout( function() { 
-				var res = that._controller._subscribeRoots(that,rootGuids); 
-				accept(res); }, 100);	
-		});
-	}
+
 	
 	unsubscribeRoots(rootGuids, done) {
 	}
@@ -95,13 +106,63 @@ class MemDatabase {
 	getVersion() {
 	}
 
+	// подписать на руты мастер базы. Руты приходят в виде дельты
+	// rootGuid - массив гуидов рутов
+	// возвращает промис
+	subscribeRoots(rootGuids) {	
+		return this._controller._subscribeRoots(this,rootGuids);
+	}
+	
+	_subscribeRootsParentSide(subDbGuid,rootGuids) {
+		console.log("memDB._subscribeRootsParentSide",subDbGuid,rootGuids);
+		var newData = {};
+		var res = [];
+		for (var i=0; i<rootGuids.length; i++) {
+			var root = this.getRoot(rootGuids[i]);
+			root._subscribe(subDbGuid);
+		}
+		return res;		
+	}
+	
+	// применить дельты к бд,
+	// deltas - массив дельт, одна дельта = один рут
+	_applyDeltas(deltas) {
+		console.log("memDB._applyDeltas");
+		for (var i=0; i<deltas.length; i++) {
+			var d = deltas[i];
+			if (d.add) { // дельта с новым рутом
+				var r = new RootDb(this, d.data, d.guid, d.version);
+			}
+			if (d.mod) {
+				// применить новые значения дельты
+			}
+		}
+	}
+	
+	// сгенерировать и послать все дельты для данной бд
+	_genSendDeltas() {
+		var deltas = [];
+		var allSubs = {}; // гуиды всех подписчиков
+		for (var root in this._roots) {
+			 var d = this._roots[root]._genDelta();
+			 if (d) {
+				deltas.push(d);
+				for (var subs in this._roots[root]._subscribers) {
+					if (!(subs in allSubs)) allSubs[subs]=[];
+					allSubs[subs].push(d);
+				}
+			}
+		}		
+		// отправить дельты		
+		for (subs in allSubs) 
+			this._controller._sendDeltas(subs,allSubs[subs]);
+
+	}
 
 	// зарегистрировать новый рут в базе
 	_regRoot(root) {
 		this._roots[root.getGuid()] = root;
-	}
-
-	
+	}	
 }
 
 class RootDb {
@@ -109,6 +170,7 @@ class RootDb {
 		this._db = db;
 		this._subscribers = {};
 		this._data = {};
+		this._log = new RootLog(this);
 		if (data) 
 			for (var elem in data) this._data[elem] = data[elem];	
 		
@@ -148,43 +210,56 @@ class RootDb {
 	setData(idx, value) {
 		this._data[idx] = value;
 	}
+	
+	// сериализация рута в json
+	serialize() {
+		var sroot = {};
+		sroot.dbGuid = this._db.getGuid();
+		sroot.guid = this.getGuid();
+		sroot.version = this.getVersion();
+		sroot.data = {};
+		for (var i=0; i<6; i++)
+			if (this.getData(i)) sroot.data[i] = this.getData(i);
+		return sroot; //JSON.stringify(sroot);
+	}
+	
+	_genDelta() {
+		var d = {};
+		for (var i=0; i<this._log._log.length; i++) { // todo инкапсулировать лог
+			if (this._log._log[i].type == "s") { // subscription
+				d = this.serialize();
+				d.add = 1;
+				return d;
+			}
+		}
+		return;
+	}
 
 	_subscribe(dbGuid) {
 		//todo проверить что в списке подписчиков БД
 		this._subscribers[dbGuid] = true;
+		this._log.addSubscription(dbGuid);
 	}
 
 	
 }
 
-class DataObject {
-	constructor(str) {
-		this._str = str;
+class RootLog {
+	constructor(root) {
+		this._root = root;
+		this._log = [];
 	}
 	
-	dataobject_get() {
-		alert('Data : '+this._str);
-	}
-	static bu() {
-		return "bu";
+	// добавить в лог подписку базы subDbGuid на рут этого лога
+	addSubscription(subDbGuid) {
+		var logElem = {};
+		logElem.type = "s";
+		logElem.subDbGuid = subDbGuid;
+		this._log.push(logElem);
 	}
 	
 }
 
-class ClientData extends DataObject {
-	constructor(str) {
-		super(str);
-		this._str2 = str;
-	}
-	
-	get() {
-		alert('DataClient : '+this._str2);
-	}
-	
-	static clientbu() {
-		return "clientbu";
-	}
-}
 /*
 - создать контроллер
 - создать мастер-базу
@@ -203,13 +278,36 @@ var chld2_2 = new MemDatabase(controller,chld1_1.getGuid());
 
 var r1 = master.addMasterRoot({1: 34, 2: 99 });
 
-var p1 = chld1_1.subscribeRoots([r1.getGuid()])
+
+chld1_1.subscribeRoots([r1.getGuid()])
 	.then( function(res) {
 		return chld2_1.subscribeRoots([r1.getGuid()]); })
 	.then( function(res) {
-		for (var i=0; i<6; i++) 
-			console.log(" ",i," ",chld1_1.getRoot(r1.getGuid()).getData(i));
+			console.log("DATA");
+			for (var i=0; i<6; i++) {
+				var v = chld2_1.getRoot(r1.getGuid()).getData(i);
+				if (v) console.log(" ",i,": ",v);
+			}
 		});
 
-
 var r1_2 = chld1_1.addMasterRoot({ 2: 1, 3: 3, 4: 5});
+
+chld2_2.subscribeRoots([r1_2.getGuid()])
+	.then( function(res) {
+			console.log("PRINT DATA");
+				console.log("DATA");
+				for (var i=0; i<6; i++) {
+					var v = chld2_2.getRoot(r1_2.getGuid()).getData(i);
+					if (v) console.log(" ",i,": ",v);	
+				}					
+			/*
+			setTimeout( function() {
+				console.log("DATA");
+				for (var i=0; i<6; i++) {
+					var v = chld2_2.getRoot(r1_2.getGuid()).getData(i);
+					if (v) console.log(" ",i,": ",v);
+				}
+				
+			}, 0);
+			*/
+	});

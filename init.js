@@ -70,6 +70,7 @@
                 dbInfo.id = dbMetaInfo.id;
                 databases[dbMetaInfo.id] = dbInfo;
                 dbInfo.element = dbEl;
+                dbInfo.meta = dbMetaInfo;
 
                 var dbObj;
                 if (dbMetaInfo.master !== undefined && dbMetaInfo.master != null) {
@@ -150,7 +151,7 @@
                 var dbInfo = databases[dbMetaInfo.id];
                 for (var j = 0; j < dbMetaInfo.roots.length; j++) {
                     var rootInfo = dbMetaInfo.roots[j];
-                    if (!rootInfo.master) continue;
+                    if (rootInfo.master) continue;
                     var mr = dbInfo.database.addMasterRoot(rootInfo.data);
                     dbRootsByGuids[mr.getGuid()] = { root: mr, dbInfo: dbInfo, id: rootInfo.id};
                 }
@@ -174,13 +175,38 @@
                         var rootInfo = dbMetaInfo.roots[j];
                         if (!rootInfo.master) continue;
                         var dbInfo = databases[dbMetaInfo.id];
-                        dbInfo.database.subscribeRoots([masterRootInfo.root.getGuid()]).then(function(res) {
-                            var newRootInfo = { root: res[0], dbInfo: dbInfo, id: rootInfo.id};
-                            createAllSlaves(newRootInfo);
-                        });
+                        subscribeOnRoot(masterRootInfo, dbInfo, rootInfo);
                     }
                 }
             }
+        }
+
+        function subscribeOnRoot(masterRootInfo, dbInfo, rootInfo) {
+            dbInfo.database.subscribeRoots([masterRootInfo.root.getGuid()]).then(function(res) {
+                var dbMetaInfo = dbInfo.meta;
+                var newRootInfo = { root: res[0], dbInfo: dbInfo, id: rootInfo.id};
+
+                var rootElId = "root-" + dbInfo.id + "-" +  rootInfo.id;
+                var rootEl = $("#" + rootElId);
+                var valList = rootEl.children(".list");
+                valList.empty();
+                var r = res[0];
+                var idx = 0;
+                while (r.getData(idx) !== undefined) {
+                    var dataElId = "data-" + dbMetaInfo.id + "-" +  rootInfo.id + "-" + idx;
+                    var dataEl = $("#" + dataElId);
+                    if (dataEl.length == 0) {
+                        var dataEl = $(valueTemplate);
+                        dataEl.attr("id", dataElId);
+                        valList.append(dataEl);
+                    }
+                    dataEl.find(".label").text(idx);
+                    dataEl.find("input").val(r.getData(idx));
+                    idx++;
+                }
+
+                createAllSlaves(newRootInfo);
+            });
         }
     });
 })(jQuery);

@@ -24,15 +24,21 @@ class MemDbController {
 	_receiveDeltas(deltas) {
 	}
 	
-	// сюда входит вызов на стороне парента
-	_subscribeRootsParentSide(subDbGuid, parentDbGuid,rootGuids) {
-		var parentDb = this._databases[parentDbGuid];
-		var res =  parentDb._subscribeRootsParentSide(subDbGuid,rootGuids);
-		parentDb._genSendDeltas(); // сгенерировать и послать дельты после подписки
-		return res;
+	// сюда входит вызов на стороне парента для подписки бд
+	// subDbGuid - гуид БД, которую подписываем
+	// dbGuid - гуид родительской БД
+	// rootGuids - массив гуидов рутов, на которые нужно подписаться
+	_subscribeRootsParentSide(subDbGuid, dbGuid,rootGuids) {
+		var db = this._databases[dbGuid];
+		var res =  db._subscribeRootsParentSide(subDbGuid,rootGuids);
+		db._genSendDeltas(); // сгенерировать и послать дельты после подписки
+		//return res;
+		return rootGuids;
 	}
 	
-	// подписка субДБ на руты, возвращает промис
+	// подписка subDb на руты rootGuids родительской базы
+	// возвращает промис
+	
 	_subscribeRoots(subDb,rootGuids) {
 		var that = this;
 		console.log("MemController._subscribeRoots");
@@ -76,46 +82,57 @@ class MemDatabase {
 		controller._regMemDb(this);
 	}
 	
-
 	
 	unsubscribeRoots(rootGuids, done) {
 	}
 	
-	// мастер рут
+	// добавить мастер рут с данными data
 	addMasterRoot(data) {
 		var r = new RootDb(this,data);	
 		return r;
 	}
 	
-	
+	// вернуть гуид базы данных
 	getGuid() {
 		return this._dbGuid;
 	}
 	
+	// вернуть гуид родительской базы данных
 	getParentGuid() {
 		return this._parentDbGuid;
 	}
 	
+	// вернуть рут базы данных по его гуиду
 	getRoot(guid) {
 		return this._roots[guid];
 	}
 	
-	rootCount() {
-	}
-	
+	// вернуть версию базы
 	getVersion() {
+		return this._version;
 	}
 
-	// подписать на руты мастер базы. Руты приходят в виде дельты
+	// подписать на руты родительской базы. Руты приходят в виде дельт
+	// и применяются к базе до того, как отрабатывает обработчик промис
 	// rootGuid - массив гуидов рутов
 	// возвращает промис
 	subscribeRoots(rootGuids) {	
-		return this._controller._subscribeRoots(this,rootGuids);
+		var that = this;
+		return new Promise( function(accept, reject) {
+			var p = that._controller._subscribeRoots(that,rootGuids);
+			p.then(function(res) {  
+				var resRoots = [];
+				for (var i=0; i<res.length; i++) {
+					resRoots.push(that.getRoot(res[i]));
+				}
+				accept(resRoots);
+			});
+		 });
 	}
 	
+	// вызывается аналогичной функцией контроллера
 	_subscribeRootsParentSide(subDbGuid,rootGuids) {
 		console.log("memDB._subscribeRootsParentSide",subDbGuid,rootGuids);
-		var newData = {};
 		var res = [];
 		for (var i=0; i<rootGuids.length; i++) {
 			var root = this.getRoot(rootGuids[i]);

@@ -20,20 +20,20 @@ class MemDbController {
 	_regMemDb(db) {
 		this._databases[db.getGuid()] = db;
 	}
-	
-	_receiveDeltas(deltas) {
-	}
-	
+
 	// сюда входит вызов на стороне парента для подписки бд
 	// subDbGuid - гуид БД, которую подписываем
 	// dbGuid - гуид родительской БД
 	// rootGuids - массив гуидов рутов, на которые нужно подписаться
 	_subscribeRootsParentSide(subDbGuid, dbGuid,rootGuids) {
 		var db = this._databases[dbGuid];
-		var res =  db._subscribeRootsParentSide(subDbGuid,rootGuids);
-		db._genSendDeltas(); // сгенерировать и послать дельты после подписки
-		//return res;
-		return rootGuids;
+		var resGuids =  db._subscribeRootsParentSide(subDbGuid,rootGuids);
+		return new Promise( function(accept, reject) {
+			var p = db._genSendDeltas(); // сгенерировать и послать дельты после подписки
+			p.then( function(res) { 
+						accept(resGuids); })
+			});
+		//return rootGuids;
 	}
 	
 	// подписка subDb на руты rootGuids родительской базы
@@ -45,28 +45,34 @@ class MemDbController {
 		return new Promise( function(accept, reject) {
 			// эмулируем удаленный вызов чере асинхронный таймаут
 			setTimeout( function() { 
-				var res = that._subscribeRootsParentSide(subDb.getGuid(),subDb.getParentGuid(),rootGuids); 
-				accept(res); }, 0);	
+				var p = that._subscribeRootsParentSide(subDb.getGuid(),subDb.getParentGuid(),rootGuids);
+				p.then(function(res) { 
+							accept(res); });
+				}, 0);	
+				//var res = that._subscribeRootsParentSide(subDb.getGuid(),subDb.getParentGuid(),rootGuids); 
+				//accept(res); }, 0);	
 		});				
 	}	
 	
 	// послать deltas, которые сгенерированны для db подписчикам
-	_sendDeltas(dbGuid,deltas) {
+	_sendDeltas(data) {
 		var that = this;
 		console.log("MemController._sendDeltas");
-		
-		
-		/*
+
 		return new Promise( function(accept, reject) {
 				// эмулируем удаленный вызов
 				setTimeout( function() { 
-					var db = that._databases[dbGuid];
-					var res = db._applyDeltas(deltas);
-					accept(res); }, 0);	
+					for (var dbGuid in data) {
+						var db = that._databases[dbGuid];
+						db._applyDeltas(data[dbGuid]);
+					}
+					accept("foo"); }, 0);	
 			});	
-			*/
-					var db = that._databases[dbGuid];
-					var res = db._applyDeltas(deltas);
+
+// todo должна работать асинхронно, но в этом случае ответ от ф-ци (сабскрайб) приходит ДО дельты.		
+
+		//var db = that._databases[dbGuid];
+		//var res = db._applyDeltas(deltas);
 	}
 }
 
@@ -80,10 +86,6 @@ class MemDatabase {
 		this._version = 1;
 		this._roots = {};
 		controller._regMemDb(this);
-	}
-	
-	
-	unsubscribeRoots(rootGuids, done) {
 	}
 	
 	// добавить мастер рут с данными data
@@ -139,7 +141,7 @@ class MemDatabase {
 			res.push(root);
 			root._subscribe(subDbGuid);
 		}
-		return res;		
+		return rootGuids;		
 	}
 	
 	// применить дельты к бд,
@@ -172,8 +174,8 @@ class MemDatabase {
 			}
 		}		
 		// отправить дельты		
-		for (subs in allSubs) 
-			this._controller._sendDeltas(subs,allSubs[subs]);
+		//for (subs in allSubs) 
+		return this._controller._sendDeltas(allSubs); //,allSubs[subs]);
 
 	}
 
@@ -243,20 +245,22 @@ class RootDb {
 	
 	_genDelta() {
 		var d = {};
-		for (var i=0; i<this._log._log.length; i++) { // todo инкапсулировать лог
-			if (this._log._log[i].type == "s") { // subscription
+		for (var i=0; i<this._log._logCount(); i++) {
+			if (this._log._getLogItem(i).type == "s") { // subscription
 				d = this.serialize();
 				d.add = 1;
+				this._log._clear();
 				return d;
 			}
 		}
+		this._log._clear();
 		return;
 	}
 
 	_subscribe(dbGuid) {
 		//todo проверить что в списке подписчиков БД
 		this._subscribers[dbGuid] = true;
-		this._log.addSubscription(dbGuid);
+		this._log._addSubscription(dbGuid);
 	}
 
 	
@@ -268,12 +272,28 @@ class RootLog {
 		this._log = [];
 	}
 	
+	_logCount() {
+		return this._log.length;
+	}
+	
+	_getLogItem(i) {
+		return this._log[i];
+	}
+	
 	// добавить в лог подписку базы subDbGuid на рут этого лога
-	addSubscription(subDbGuid) {
+	_addSubscription(subDbGuid) {
 		var logElem = {};
 		logElem.type = "s";
 		logElem.subDbGuid = subDbGuid;
 		this._log.push(logElem);
+	}
+	
+	_addModifValue(idx, value) {
+		
+	}
+	
+	_clear() {
+		this._log = [];
 	}
 	
 }
@@ -296,7 +316,7 @@ var chld2_2 = new MemDatabase(controller,chld1_1.getGuid());
 
 var r1 = master.addMasterRoot({1: 34, 2: 99 });
 
-
+/*
 chld1_1.subscribeRoots([r1.getGuid()])
 	.then( function(res) {
 		return chld2_1.subscribeRoots([r1.getGuid()]); })
@@ -307,7 +327,8 @@ chld1_1.subscribeRoots([r1.getGuid()])
 				if (v) console.log(" ",i,": ",v);
 			}
 		});
-
+*/
+		
 var r1_2 = chld1_1.addMasterRoot({ 2: 1, 3: 3, 4: 5});
 
 chld2_2.subscribeRoots([r1_2.getGuid()])
@@ -318,14 +339,6 @@ chld2_2.subscribeRoots([r1_2.getGuid()])
 					var v = chld2_2.getRoot(r1_2.getGuid()).getData(i);
 					if (v) console.log(" ",i,": ",v);	
 				}					
-			/*
-			setTimeout( function() {
-				console.log("DATA");
-				for (var i=0; i<6; i++) {
-					var v = chld2_2.getRoot(r1_2.getGuid()).getData(i);
-					if (v) console.log(" ",i,": ",v);
-				}
-				
-			}, 0);
-			*/
+
 	});
+	

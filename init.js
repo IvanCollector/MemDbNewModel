@@ -92,7 +92,9 @@
                         h: 0
                     }
                 }
+                levels[dbInfo.level].x = Math.max(masterInfo.element.offset().left - 8, levels[dbInfo.level].x);
             }
+
 
             dbInfo.element.css({ top: levels[dbInfo.level].y + "px", left: levels[dbInfo.level].x + "px"});
             levels[dbInfo.level].x += cellWidth;

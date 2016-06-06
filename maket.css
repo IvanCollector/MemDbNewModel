@@ -2,6 +2,10 @@ body,
 div {
   box-sizing: border-box;
 }
+input[type='text'] {
+  width: 100px;
+  margin-left: 5px;
+}
 .label,
 .readonly-value {
   display: inline;

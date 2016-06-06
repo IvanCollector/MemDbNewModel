@@ -116,12 +116,11 @@ class MemDatabase {
 	_subscribeRootsParentSide(subDbGuid,rootGuids) {
 		console.log("memDB._subscribeRootsParentSide",subDbGuid,rootGuids);
 		var newData = {};
-		var res = [];
 		for (var i=0; i<rootGuids.length; i++) {
 			var root = this.getRoot(rootGuids[i]);
 			root._subscribe(subDbGuid);
 		}
-		return res;		
+		return rootGuids;		
 	}
 	
 	// применить дельты к бд,

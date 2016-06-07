@@ -33,6 +33,14 @@
             $(".db-container").height($(".all").height() - 65);
         });
 
+        $("#select").change(function() {
+            var val = $(this).val();
+            dbMeta = window[val];
+            renderAllDatabases();
+            createAllRoots();
+            $(this).attr("disabled", "true");
+        });
+
 
 
         var databases = {};
@@ -41,11 +49,6 @@
         var levels = {};
 
         var controller2 = new MemDbController();
-
-        renderAllDatabases();
-
-        createAllRoots();
-
 
         function renderAllDatabases() {
             levels = {};
@@ -175,7 +178,7 @@
                     if (dbMetaInfo.master === undefined || dbMetaInfo.master != masterDbInfo.id) continue;
                     for (var j = 0; j < dbMetaInfo.roots.length; j++) {
                         var rootInfo = dbMetaInfo.roots[j];
-                        if (!rootInfo.master) continue;
+                        if (!rootInfo.master || masterRootInfo.id != rootInfo.master) continue;
                         var dbInfo = databases[dbMetaInfo.id];
                         subscribeOnRoot(masterRootInfo, dbInfo, rootInfo);
                     }

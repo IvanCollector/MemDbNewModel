@@ -33,7 +33,6 @@ class MemDbController {
 			p.then( function(res) { 
 						accept(resGuids); })
 			});
-		//return rootGuids;
 	}
 	
 	// подписка subDb на руты rootGuids родительской базы
@@ -49,8 +48,6 @@ class MemDbController {
 				p.then(function(res) { 
 							accept(res); });
 				}, 0);	
-				//var res = that._subscribeRootsParentSide(subDb.getGuid(),subDb.getParentGuid(),rootGuids); 
-				//accept(res); }, 0);	
 		});				
 	}	
 	
@@ -68,11 +65,6 @@ class MemDbController {
 					}
 					accept("foo"); }, 0);	
 			});	
-
-// todo должна работать асинхронно, но в этом случае ответ от ф-ци (сабскрайб) приходит ДО дельты.		
-
-		//var db = that._databases[dbGuid];
-		//var res = db._applyDeltas(deltas);
 	}
 }
 
@@ -85,6 +77,10 @@ class MemDatabase {
 		this._dbGuid = guid();
 		this._version = 1;
 		this._roots = {};
+		// транзакции
+		this._readOnlyMode = false;
+		this._tranGuid = undefined;
+		this._tranCount = 0;
 		controller._regMemDb(this);
 	}
 	
@@ -112,6 +108,52 @@ class MemDatabase {
 	// вернуть версию базы
 	getVersion() {
 		return this._version;
+	}
+	
+	// инициировать транзакцию
+	start() {
+		if (this.isReadOnly()) 
+			throw new Error("can't start transaction: memDb is in readonly mode");
+
+		if (this._tranCount == 0) {
+			this._tranGuid = guid();
+			this._readOnlyMode = false;
+			this._tranCount = 1;
+		}
+		else
+			this._tranCount++;
+	}
+	
+	commit() {
+		if (this.isReadOnly()) 
+			throw new Error("can't commit: memDb is in readonly mode");		
+		if (this._tranCount == 0) 
+			throw new Error("can't commit: transaction not started");
+		if (this._tranCount == 1) {	
+			this._tranGuid = undefined;
+			//todo распространить транзакцию по паренту/подписчикам
+		}
+
+		this._tranCount--;
+			
+	}
+	
+	rollback() {
+	}
+	
+	isInTran() {
+		if (this._tranCount == 0)
+			return false;
+		else
+			return true;
+	}
+	
+	isReadOnly() {
+		return this._readOnlyMode;
+	}
+	
+	get tranGuid() {
+		return this._tranGuid;
 	}
 
 	// подписать на руты родительской базы. Руты приходят в виде дельт
@@ -155,27 +197,39 @@ class MemDatabase {
 			}
 			if (d.mod) {
 				// применить новые значения дельты
+				var root = this._getRoot(d.guid);
+				for (var idx in d.data) {
+					this.setData(idx,d.data[idx]);
+				}
 			}
 		}
 	}
 	
 	// сгенерировать и послать все дельты для данной бд
 	_genSendDeltas() {
-		var deltas = [];
 		var allSubs = {}; // гуиды всех подписчиков
-		for (var root in this._roots) {
-			 var d = this._roots[root]._genDelta();
-			 if (d) {
-				deltas.push(d);
-				for (var subs in this._roots[root]._subscribers) {
+		for (var rg in this._roots) {
+			var root = this._roots[rg];
+			var d = root._genDelta();
+			var newSubs = root._getLog()._getNewSubscribersGuids();
+			if (newSubs.length>0) { 		// создаем сериализованное представление рута для отсылки новому подписчику
+				var d_add = root.serialize();
+				d_add.add = 1;
+			}
+
+			for (var subs in root._subscribers) { // todo refact инкапсулировать
+				if (newSubs.indexOf(subs)!=-1) 
+					var gd = d_add;
+				else 
+					gd = d;
+				if (gd) {
 					if (!(subs in allSubs)) allSubs[subs]=[];
-					allSubs[subs].push(d);
+					allSubs[subs].push(gd);
 				}
 			}
 		}		
-		// отправить дельты		
-		//for (subs in allSubs) 
-		return this._controller._sendDeltas(allSubs); //,allSubs[subs]);
+		// отправить дельты	
+		return this._controller._sendDeltas(allSubs); 
 
 	}
 
@@ -228,7 +282,9 @@ class RootDb {
 	}
 
 	setData(idx, value) {
-		this._data[idx] = value;
+		var ov = this._data[idx];
+		this._data[idx] = value;	
+		this._log._addModifValue(idx,ov,value);
 	}
 	
 	// сериализация рута в json
@@ -243,18 +299,28 @@ class RootDb {
 		return sroot; //JSON.stringify(sroot);
 	}
 	
+	_getLog() {
+		return this._log;
+	}
+	
 	_genDelta() {
-		var d = {};
+		var d = undefined;
 		for (var i=0; i<this._log._logCount(); i++) {
-			if (this._log._getLogItem(i).type == "s") { // subscription
-				d = this.serialize();
-				d.add = 1;
-				this._log._clear();
-				return d;
+			var logItem = this._log._getLogItem(i);
+			if (logItem.type == "m") { // modification
+				if (!d) {
+					d = {};
+					d.dbGuid = this._db.getGuid();
+					d.guid = this.getGuid();
+					d.version = this.getVersion();
+					d.data = {};
+					d.mod = 1;
+				}
+				d.data[logItem.index] = logItem.nv;
 			}
 		}
 		this._log._clear();
-		return;
+		return d;
 	}
 
 	_subscribe(dbGuid) {
@@ -270,6 +336,7 @@ class RootLog {
 	constructor(root) {
 		this._root = root;
 		this._log = [];
+		this._newSubsGuids = []; 	// массив новых подписчиков
 	}
 	
 	_logCount() {
@@ -280,20 +347,28 @@ class RootLog {
 		return this._log[i];
 	}
 	
-	// добавить в лог подписку базы subDbGuid на рут этого лога
-	_addSubscription(subDbGuid) {
-		var logElem = {};
-		logElem.type = "s";
-		logElem.subDbGuid = subDbGuid;
-		this._log.push(logElem);
+	_getNewSubscribersGuids() {
+		return this._newSubsGuids.slice(0,this._newSubsGuids.length);
 	}
 	
-	_addModifValue(idx, value) {
-		
+	// добавить в лог подписку базы subDbGuid на рут этого лога
+	_addSubscription(subDbGuid) {
+		this._newSubsGuids.push(subDbGuid);
+	}
+	
+	_addModifValue(idx, ov, nv) {
+		if (ov==nv) return;
+		var logElem = {};
+		logElem.type = "m";
+		logElem.index = idx;
+		logElem.ov = ov;
+		logElem.nv = nv;
+		this._log.push(logElem);		
 	}
 	
 	_clear() {
 		this._log = [];
+		this._newsubs = [];
 	}
 	
 }
@@ -316,7 +391,7 @@ var chld2_2 = new MemDatabase(controller,chld1_1.getGuid());
 
 var r1 = master.addMasterRoot({1: 34, 2: 99 });
 
-/*
+
 chld1_1.subscribeRoots([r1.getGuid()])
 	.then( function(res) {
 		return chld2_1.subscribeRoots([r1.getGuid()]); })
@@ -327,7 +402,7 @@ chld1_1.subscribeRoots([r1.getGuid()])
 				if (v) console.log(" ",i,": ",v);
 			}
 		});
-*/
+
 		
 var r1_2 = chld1_1.addMasterRoot({ 2: 1, 3: 3, 4: 5});
 
@@ -341,4 +416,7 @@ chld2_2.subscribeRoots([r1_2.getGuid()])
 				}					
 
 	});
-	
+
+r1_2.setData(0,777);
+chld1_1._genSendDeltas();
+

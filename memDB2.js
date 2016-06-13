@@ -78,7 +78,7 @@ class MemDatabase {
 		this._version = 1;
 		this._roots = {};
 		// транзакции
-		this._readOnlyMode = false;
+		this._readOnlyMode = true;
 		this._tranGuid = undefined;
 		this._tranCount = 0;
 		controller._regMemDb(this);
@@ -110,14 +110,25 @@ class MemDatabase {
 		return this._version;
 	}
 	
-	// инициировать транзакцию
+	// стартовать внешнюю транзакцию с гуидом guid
+	// sourceGuid - гуид ДБ-источника транзакции
+	_startExternal(guid, sourceGuid) {
+		if (this.inTran() && guid != this.tranGuid)
+			throw new Error("can't start external transaction")
+		this._readOnlyMode = false;
+		if (this.inTran()) 
+			return;
+		this._tranGuid = guid;
+	}
+	
+	// стартовать транзакцию
 	start() {
-		if (this.isReadOnly()) 
-			throw new Error("can't start transaction: memDb is in readonly mode");
+		if (this.inTran() && this.isReadOnly()) 
+			throw new Error("can't start transaction: database is in readonly mode");
 
 		if (this._tranCount == 0) {
 			this._tranGuid = guid();
-			this._readOnlyMode = false;
+			this._readOnlyMode = false; // можно редактировать мемдб
 			this._tranCount = 1;
 		}
 		else
@@ -125,23 +136,32 @@ class MemDatabase {
 	}
 	
 	commit() {
-		if (this.isReadOnly()) 
-			throw new Error("can't commit: memDb is in readonly mode");		
-		if (this._tranCount == 0) 
-			throw new Error("can't commit: transaction not started");
-		if (this._tranCount == 1) {	
-			this._tranGuid = undefined;
-			//todo распространить транзакцию по паренту/подписчикам
-		}
+		return new Promise( function(accept, reject) {
+			/*
+			if (this._tranCount == 0) 
+				throw new Error("can't commit: transaction not started");
+				
+			if (this.isReadOnly()) 
+				throw new Error("can't commit: memDb is in readonly mode");		
 
-		this._tranCount--;
+			*/	
+			if (this._tranCount == 1) {	
+				this._tranGuid = undefined;
+				//todo распространить транзакцию по паренту/подписчикам
+				
+			}
+
+			this._tranCount--;
+			
+			accept();
+		});
 			
 	}
 	
 	rollback() {
 	}
 	
-	isInTran() {
+	inTran() {
 		if (this._tranCount == 0)
 			return false;
 		else
@@ -155,6 +175,24 @@ class MemDatabase {
 	get tranGuid() {
 		return this._tranGuid;
 	}
+	
+	// вызов с клиента - генерирует дельты и добавляет удаленные вызовы, которые буферизовались
+	_remoteClient() {
+	
+		if (this.isReadOnly()) 
+			throw new Error("can't exec a remote call: database is in readonly mode");
+			
+		var p = new Promise( function(accept, reject) {
+			// создать пакет транзакции удаленного вызова и передать его паренту
+		});
+		return p;
+	}
+	
+	_remoteParent() {
+	
+	}
+	
+	
 
 	// подписать на руты родительской базы. Руты приходят в виде дельт
 	// и применяются к базе до того, как отрабатывает обработчик промис

@@ -20,6 +20,10 @@ class MemDbController {
 	_regMemDb(db) {
 		this._databases[db.getGuid()] = db;
 	}
+	
+	getDb(guid) {
+		return this._databases[guid];
+	}
 
 	// сюда входит вызов на стороне парента для подписки бд
 	// subDbGuid - гуид БД, которую подписываем
@@ -46,8 +50,9 @@ class MemDbController {
 			setTimeout( function() { 
 				var p = that._subscribeRootsParentSide(subDb.getGuid(),subDb.getParentGuid(),rootGuids);
 				p.then(function(res) { 
-							accept(res); });
-				}, 0);	
+						accept(res); 
+					});
+			}, 0);	
 		});				
 	}	
 	
@@ -88,6 +93,10 @@ class MemDatabase {
 	addMasterRoot(data) {
 		var r = new RootDb(this,data);	
 		return r;
+	}
+	
+	getController() {
+		return this._controller;
 	}
 	
 	// вернуть гуид базы данных
@@ -177,21 +186,72 @@ class MemDatabase {
 	}
 	
 	// вызов с клиента - генерирует дельты и добавляет удаленные вызовы, которые буферизовались
-	_remoteClient() {
-	
+	// async - (true) асинхронный 
+	_remoteClient(async, commit) {
+
+		if (!this.inTran()) 
+			throw new Error("can't exec a remote call: database is not in transaction");	
 		if (this.isReadOnly()) 
 			throw new Error("can't exec a remote call: database is in readonly mode");
 			
-		var p = new Promise( function(accept, reject) {
-			// создать пакет транзакции удаленного вызова и передать его паренту
+		var that = this;
+		// создать пакет транзакции удаленного вызова и передать его паренту
+		var packet = { 
+			db : this.getGuid(),
+			tran : this.tranGuid,	
+			async : async ? 1 : 0,			// вызов асинхронный или синхронный
+			commit : commit ? 1 : 0,		// коммитить транзакцию или нет
+			deltas : [],					// массив дельт
+			calls : []						// массив удаленных вызовов
+		};
+		
+		for (var rg in this._roots) {	// сгенерировать дельты
+			var root = this._roots[rg];
+			var d = root._genDelta();
+			if (d) packet.deltas.push(d);
+		}
+
+		if (!async) {
+			this._readOnlyMode = true;
+		}	
+					
+		return new Promise( function(accept, reject) {
+			
+			setTimeout( function() {
+				var parent = that.getController().getDb(that.getParentGuid());
+				var p = parent._remoteParent(packet);
+				p.then( function(res) {
+					accept(res);
+				});
+				
+			},0);
 		});
-		return p;
+
 	}
 	
-	_remoteParent() {
-	
+	_remoteParent(packet) {
+		var that = this;
+		this._startExternal(packet.tran, packet.db);
+		// todo очередь сделать
+		return new Promise( function(accept,reject) {
+			setTimeout( function() {
+				var res = that._execPacket(packet);
+				accept(res);
+			},0);			
+		});
 	}
 	
+	_execPacket(packet) {
+		if (packet.tran != this.tranGuid) 	
+			throw new Error("can't exec _execPacket: bad guid transaction");
+		if (packet.deltas) 
+			this._applyDeltas(packet.deltas);
+			
+		//todo - сделать коммит
+		
+		//todo удаленный вызов реализовать
+		return true;
+	}
 	
 
 	// подписать на руты родительской базы. Руты приходят в виде дельт
@@ -201,7 +261,7 @@ class MemDatabase {
 	subscribeRoots(rootGuids) {	
 		var that = this;
 		return new Promise( function(accept, reject) {
-			var p = that._controller._subscribeRoots(that,rootGuids);
+			var p = that.getController()._subscribeRoots(that,rootGuids);
 			p.then(function(res) {  
 				var resRoots = [];
 				for (var i=0; i<res.length; i++) {
@@ -235,9 +295,9 @@ class MemDatabase {
 			}
 			if (d.mod) {
 				// применить новые значения дельты
-				var root = this._getRoot(d.guid);
+				var root = this.getRoot(d.guid);
 				for (var idx in d.data) {
-					this.setData(idx,d.data[idx]);
+					root.setData(idx,d.data[idx]);
 				}
 			}
 		}
@@ -267,7 +327,7 @@ class MemDatabase {
 			}
 		}		
 		// отправить дельты	
-		return this._controller._sendDeltas(allSubs); 
+		return this.getController()._sendDeltas(allSubs); 
 
 	}
 
@@ -313,6 +373,10 @@ class RootDb {
 		else
 			return this._parentVersion;
 	}
+	
+	getDb() {
+		return this._db;
+	}
 
 	// чтение / запись данных в вектор рута
 	getData(idx) {
@@ -320,6 +384,8 @@ class RootDb {
 	}
 
 	setData(idx, value) {
+		if (this.getDb().isReadOnly())
+			throw new Error("can't exec setData: db is in readonly mode");
 		var ov = this._data[idx];
 		this._data[idx] = value;	
 		this._log._addModifValue(idx,ov,value);
@@ -429,7 +495,7 @@ var chld2_2 = new MemDatabase(controller,chld1_1.getGuid());
 
 var r1 = master.addMasterRoot({1: 34, 2: 99 });
 
-
+/*
 chld1_1.subscribeRoots([r1.getGuid()])
 	.then( function(res) {
 		return chld2_1.subscribeRoots([r1.getGuid()]); })
@@ -440,21 +506,37 @@ chld1_1.subscribeRoots([r1.getGuid()])
 				if (v) console.log(" ",i,": ",v);
 			}
 		});
-
+*/
 		
 var r1_2 = chld1_1.addMasterRoot({ 2: 1, 3: 3, 4: 5});
 
+
 chld2_2.subscribeRoots([r1_2.getGuid()])
 	.then( function(res) {
-			console.log("PRINT DATA");
-				console.log("DATA");
+			var r2_2 =  chld2_2.getRoot(r1_2.getGuid());
+			chld2_2.start();
+			r2_2.setData(2,777);
+			chld2_2._remoteClient(true,true).then( function(res) {
+				console.log("PRINT DATA 2");
 				for (var i=0; i<6; i++) {
-					var v = chld2_2.getRoot(r1_2.getGuid()).getData(i);
+					var v = r1_2.getData(i);
 					if (v) console.log(" ",i,": ",v);	
-				}					
+				}	
+			});
+	
+			console.log("PRINT DATA");
+			for (var i=0; i<6; i++) {
+				var v = r2_2.getData(i);
+				if (v) console.log(" ",i,": ",v);	
+			}		
+				
 
 	});
 
+
+
+
+/*
 r1_2.setData(0,777);
 chld1_1._genSendDeltas();
-
+*/

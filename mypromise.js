@@ -1,5 +1,6 @@
 'use strict';
 
+
 function guid() {
 
     function s4() {
@@ -9,8 +10,6 @@ function guid() {
     return s4() + s4() +'-'+ s4()  +'-'+ s4() +'-'+
         s4() +'-'+ s4() + s4() + s4();
 }
-
-
 
 // todo контроллеры также надо упорядочить в дерево
 class MemDbController {
@@ -26,26 +25,11 @@ class MemDbController {
 		return this._databases[guid];
 	}
 	
-	// послать deltas, которые сгенерированны для db подписчикам
-	_sendDeltas(data) {
-		var that = this;
-		
-
-		return new Promise( function(resolve, reject) {
-				// эмулируем удаленный вызов
-				setTimeout( function() { 
-					for (var dbGuid in data) {
-						var db = that._databases[dbGuid];
-						db._applyDeltas(data[dbGuid]);
-					}
-					resolve("foo"); }, 0);	
-			});	
-	}
 }
 
 
+class MemDataBase {
 
-class MemDatabase {
 	constructor(controller, parentDbGuid, params) {
 
 		this._controller = controller;
@@ -55,17 +39,25 @@ class MemDatabase {
 		this._roots = {};
 		// транзакции
 		this._curTran = undefined;
-		this._readOnlyMode = true;
-		this._tranGuid = undefined;
+		this._readOnlyMode = false;
 		this._calls = [];
+
+		this._promiseCount = 0;
+		this.promises = {};
+
 		controller._regMemDb(this);
 
 		if (params)
 			this._name = params.name;
 	}
+
 	
 	// добавить мастер рут с данными data
 	addMasterRoot(data, params) {
+
+		if (!this._curTran) throw new Error("нельзя выполнить addMasterRoot: транзакция не открыта");
+		if (this.isReadOnly()) throw new Error("нельзя выполнить addMasterRoot: база данных в режиме ReadOnly");
+
 		var r = new RootDb(this,data,undefined,undefined,params);	
 		return r;
 	}
@@ -94,79 +86,16 @@ class MemDatabase {
 		return this._version;
 	}
 
-	
-	// стартовать транзакцию
-	/*
-	start() {
-		if (this.inTran() && this.isReadOnly()) 
-			throw new Error("can't start transaction: database is in readonly mode");
 
-		this._tranGuid = guid();
-		this._readOnlyMode = false; // можно редактировать мемдб
-	}
-	*/
-
-	
-	/*
-	_commit() {
-		if (!this.inTran()) 
-			throw new Error("can't commit : database is not in transaction");		
-		if (this.isReadOnly()) 
-			throw new Error("can't commit transaction: database is in readonly mode");
-
-		this._tranGuid = undefined;
-		this._readOnlyMode = false;			
-	
-	}
-	*/
-
-/*
-	startAsync() {
-		var that = this;
-
-		return new Promise(function(resolve,reject){ // todo реорганизовать в очередь транзакций
-
-			if (that.inTran() && that.isReadOnly()) 
-				throw new Error("can't start transaction: database is in readonly mode");
-
-			that._tranGuid = guid();
-			that._readOnlyMode = false; // можно редактировать мемдб	
-			resolve(that._tranGuid);
-		});
-	}
-*/
-
-	inTran() {
-		return (this._curTran!=undefined);
-	}
 	
 	isReadOnly() {
 		return this._readOnlyMode;
 	}
 	
-	get tranGuid() {
-		return this._curTran ? this._curTran.getGuid(): undefined;
-	}
-
-
-	// стартовать внешнюю транзакцию с гуидом guid
-	// sourceGuid - гуид ДБ-источника транзакции
-	_startExternal(guid, sourceGuid) {
-		if (this.inTran() && guid != this.tranGuid)
-			throw new Error("can't start external transaction")
-		this._readOnlyMode = false;
-		if (this.inTran()) 
-			return;
-		//this._tranGuid = guid;
-		this._curTran = new MemTransaction(this);
-		this._curTran._start(guid);
-		
-	}
-
-// NEW TRAN BEGIN
+	// Методы управления транзакцией
 
 	start() {
-		if (this.isReadOnly())  throw new Error("can't start transaction: database is in readonly mode");
+
 		if (!this._curTran) {
 			this._curTran = new MemTransaction(this);
 			this._curTran._start();
@@ -177,32 +106,76 @@ class MemDatabase {
 		return this._curTran;
 	}
 
-	commit() {
-		if (!this._curTran) throw new Error("нельзя завершить незапущенную транзакцию");	
-		if (this.isReadOnly())  throw new Error("can't commit transaction: database is in readonly mode");
 
-		this._curTran._commit();
-		if (this._curTran.getTranCount() == 0) {
-			this._curTran = undefined;
+	// стартовать внешнюю транзакцию с гуидом guid
+	// sourceGuid - гуид ДБ-источника транзакции
+	_startExternal(extGuid, sourceGuid) {
+		if (this.inTran() && extGuid != this.tranGuid)
+			throw new Error("can't start external transaction")
+		this._readOnlyMode = false;
+		
+		//if (this.inTran()) 
+		//	return;
+
+		this._curTran = new MemTransaction(this);
+		this._curTran._start(extGuid);
+		
+	}
+
+
+	commit(){
+
+		if (!this._curTran) {	
+			throw new Error("нельзя завершить незапущенную транзакцию");	
 		}
-		//this._readOnlyMode = false;	
+		else {
+			this._curTran._commit();
+			if (this._curTran.state() == "commited")
+				this._curTran = undefined;
+		}
 	}
 
 	curTran(){
 		return this._curTran;
 	}
 
-	// NEW TRAN END
+	inTran() {
+		return (this._curTran!=undefined);
+	}
+
+	get tranGuid() {
+		return this._curTran ? this._curTran.getGuid(): undefined;
+	}
+
+
+	run(userFunc) {
+		
+		var wrapFn = function(resolve,reject,tran) {
+			setTimeout(function() {
+				userFunc(resolve,reject,tran);
+			},0);
+		}
+		
+		var p = new DbPromise(this, wrapFn);
+		
+		if (!this.getParentGuid())
+			return p;
+
+		var that = this;
+		return p.then( function(res,tran) {
+			return that._remoteClient(true,false);
+		});
+	}
 
 	_remoteClientPromise(packet) {
 		var that = this;
 		this._readOnlyMode = true; // в режим ридонли пока от парента не вернется ответ
-		return new Promise( function(resolve,reject) {
+		return new DbPromise(this, function(resolve,reject, tran) {
 			
 			setTimeout( function() {
 				var parent = that.getController().getDb(that.getParentGuid());
 				var p = parent._remoteParent(packet);
-				p.then( function(res) {
+				p.then( function(res, tran) {
 					that._readOnlyMode = false; // выйти из ридонли пока обработка колбэков
 					if (packet.calls.length>0) // todo переделать на N элементов
 						packet.calls[0].resolve(res.results[0]); // todo рекурсия асинхронная
@@ -264,7 +237,7 @@ class MemDatabase {
 		var that = this;
 		this._startExternal(packet.tran, packet.db);
 		// todo очередь сделать
-		return that._exec(packet).then( function(res){
+		return that._exec(packet).then( function(res, tran){
 			var r = {};
 			r.results = [];
 			r.results.push(res);
@@ -281,7 +254,7 @@ class MemDatabase {
 	_exec(packet) {
 		var that = this;
 		var funcresult = null;
-		return new Promise(function(resolve,reject) {
+		return new DbPromise(this, function(resolve,reject,tran) {
 			var dnew = [];
 			for (var i=0; i<packet.deltas.length; i++) {
 				var d = that.getRoot(packet.deltas[i].guid);
@@ -323,7 +296,7 @@ class MemDatabase {
 					//return res;
 					//return that._propDeltas("subs", packet.deltas,packet.db); // todo еще и в парент
 
-				}).then(function(res){
+				}).then(function(res, tran){
 					resolve(funcresult);
 				});
 
@@ -331,6 +304,7 @@ class MemDatabase {
 
 		});
 	}
+
 
 
 	_memRemote(obj) {
@@ -347,8 +321,13 @@ class MemDatabase {
 
 	subscribeRoots(rootGuids) {
 
+		if (!this.inTran()) 
+			throw new Error("can't exec subscribeRoots: database isn't in transaction");	
+		if (this.isReadOnly()) 
+			throw new Error("can't exec subscribeRoots: database is in readonly mode");
+
 		var that = this;
-		return new Promise(function(resolve, reject) {
+		return new DbPromise(this, function(resolve, reject, tran) {
 				var a = { subDbGuid: that.getGuid(), rootGuids: rootGuids }
 				var o = { name: "_subscribeRootsParentSide", arg: a, resolve: function(res) {
 					var resRoots = [];
@@ -360,7 +339,7 @@ class MemDatabase {
 				that._memRemote(o);
 		});
 	}
-	
+
 
 	_subscribeRootsParentSide(objsub) {
 		if (!this.inTran()) throw new Error("can't subscribe on parent: database is not in transaction");	
@@ -394,6 +373,22 @@ class MemDatabase {
 			}
 		}
 	}
+
+
+	// послать deltas, которые сгенерированны для db подписчикам
+	_sendDeltas(data) {
+		var that = this;
+		
+		return new DbPromise(this, function(resolve, reject, tran) {
+				// эмулируем удаленный вызов
+				setTimeout( function() { 
+					for (var dbGuid in data) {
+						var db = that.getController()._databases[dbGuid];
+						db._applyDeltas(data[dbGuid]);
+					}
+					resolve("foo"); }, 0);	
+			});	
+	}
 	
 	// сгенерировать и послать все дельты для данной бд
 	_genSendDeltas() {
@@ -421,7 +416,8 @@ class MemDatabase {
 			}
 		}		
 		// отправить дельты	
-		return this.getController()._sendDeltas(allSubs); 
+
+		return this._sendDeltas(allSubs); 
 	}
 
 	// разослать deltas, которые сгенерированны для db подписчикам
@@ -461,15 +457,22 @@ class MemDatabase {
 
 		}
 		// отправить дельты	
-		return this.getController()._sendDeltas(allSubs); 
+		return this._sendDeltas(allSubs); 
 
 	}
 
+	_incPromise(curPromise) {
+		var cnum =  ++this._promiseCount;
+		this.promises[cnum] = curPromise;
+		return cnum;
+	}
 
 	// зарегистрировать новый рут в базе
 	_regRoot(root) {
 		this._roots[root.getGuid()] = root;
-	}	
+	}
+
+
 }
 
 class MemTransaction {
@@ -480,7 +483,7 @@ class MemTransaction {
 		this._memDb = memDb;
 	}	
 
-	tranGuid() {
+	getGuid() {
 		return this._tranGuid;
 	}
 
@@ -492,26 +495,19 @@ class MemTransaction {
 		return this._memDb;
 	}
 
-	getTranCount() {
-		reutrn this._tranCount;
-	}
-
 	_start(extGuid) {
 		if (this._state == "commited") {
 			throw new Error("нельзя запустить завершенную транзакцию");
 		}
+		var ng = guid();
 		if (this._tranCount==0) {
-			if (extGuid) {
-				this._tranGuid = extGuid;
-				this._external = true;
-			}
-			else	
-				this._tranGuid = guid();
+			this._tranGuid = (extGuid ? extGuid : ng);
 			this._state = "started";
+			if (guid) this._external = true;
 		}
 
 		this._tranCount++;
-		console.log("COUNT "+this._tranCount);
+		//console.log("COUNT "+this._tranCount);
 	}
 
 	_commit() {
@@ -528,6 +524,8 @@ class MemTransaction {
 	}
 
 }
+
+
 
 class RootDb {
 	constructor(db, data, parentGuid, parentVersion, params) {
@@ -576,16 +574,30 @@ class RootDb {
 		return this._data[idx];
 	}
 
-	setData(idx, value) {
+	setData(idx, value, tranGuid) {
 		var db = this.getDb();
-		if (db.isReadOnly())
+		if (db.isReadOnly()) 
 			throw new Error("can't exec setData: db is in readonly mode");
 
-		if (!db.inTran()) db.start();	// если не в транзакции, то автоматически зайти в нее
+		if (!db.inTran()) 
+			throw new Error("can't exec setData: not in scope of transaction");
 
-		var ov = this._data[idx];
-		this._data[idx] = value;	
-		this._log._addModifValue(idx,ov,value);
+		var tg = db._curTran.getGuid();
+		if (tg && (tg === tranGuid)) {
+			var ov = this._data[idx];
+			this._data[idx] = value;	
+			this._log._addModifValue(idx,ov,value);
+		}
+		else 
+			throw new Error("can't modify data " + (tg ? "in scope of a wrong transaction " : "without transaction"));
+	}
+
+	_print() {
+		console.log("PRINT ROOT DATA "+this._name);
+		for (var i=0; i<6; i++) {
+			var v = this.getData(i);
+			if (v) console.log(" ",i,": ",v);	
+		}	
 	}
 	
 	// сериализация рута в json
@@ -679,118 +691,266 @@ class RootLog {
 	
 }
 
-/*
-- создать контроллер
-- создать мастер-базу
-- создать мастер-руты в базе
-- создать подписанную базу
-- создать подписанные руты в базе
 
-*/
 
+
+class DbPromise {
+	constructor(memDb, func, dbgTech) {
+
+		if (memDb instanceof MemDataBase) {
+			this._memDb = memDb;
+			// стартовать транзакцию (предполоагаем, что НОВУЮ!)
+			this._memTran = this._memDb.start();
+		}
+
+		this._num = this._memTran.getDb()._incPromise(this);
+		this._state = "waiting";
+		this._tech = dbgTech;
+
+		var that = this;
+
+		var _defResolve = function(res){
+				console.log("RESOLVED ", res, "Promise ", that._num, "tech:", that._tech);	
+				setTimeout(function() {
+					if (that._resolve) 	
+						that._resolve(res,that._memTran); 
+					that._memDb.commit();
+					that._state = "resolved";
+				},0);
+		}
+		this._defResolve = _defResolve;
+
+		var _defReject = function(res){
+			console.log("REJECTED ", res);
+				setTimeout(function() {
+					if (that._reject)
+						that._reject(res,that._memTran); 
+					that._memDb.commit(); // todo заменить на ролбэк?
+					that._state = "rejected";
+				},0); 
+		}
+		this._defReject = _defReject;
+
+		return func(this._defResolve,this._defReject, this._memTran);
+	}
+
+
+	getResolve() {
+		return this._defResolve;
+	}
+
+	then(resolve, reject) {
+		
+		var that = this;
+
+		// создать технический промис и вернуть его наружу (чтобы можно было сделать цепочку .then)
+		var techPromise = new DbPromise(this._memDb,function(_resolve,_reject,tr) {
+				console.log("TECH PROMISE CREATED");
+				return;
+			},true);
+		
+		if (resolve) {
+			var wrp = function(res,tran) { // обработчик resolve ЭТОГО промиса
+				var r = resolve(res,tran);
+				var fres = techPromise.getResolve();
+
+				if (r instanceof DbPromise) {
+					r._resolve = function(res, tran) {
+						fres(res, tran);
+					}
+					//r.getResolve(res,tran);
+				}
+				else { // синхронный обработчик
+					techPromise._defResolve(r, tran);
+				}
+				return "WRAPPER";
+			}
+
+			this._resolve = wrp;
+
+		}
+		//todo аналогично для reject
+
+		return techPromise;
+	}
+
+	getNum(){
+		return this._num;
+	}
+}
+
+
+function test2() {
+
+	var controller = new MemDbController();		// создаем контроллер базы
+	var master = new MemDataBase(controller,undefined,{ name: "MasterBase"});  	// создаем корневую базу
+	var chld1 = new MemDataBase(controller,master.getGuid(),{name: "Level1_Db1"});
+
+	var r1,r2;
+
+	var userFunc1 = function(resolve,reject, tran) {
+			//var p1 = new DbPromise
+			console.log("INIT MASTER BASE");
+			r1 = master.addMasterRoot({1: 34, 2: 99 }, { name: "MasterBase_Root1"} );
+			r1._print();
+			r1.setData(1,345,tran.getGuid());
+			setTimeout(function() {
+				console.log("RESOLVE MASTER BASE");
+				resolve("OK");
+			} ,50);
+		};
+
+
+
+	var f2 = function(resolve, reject) {
+			var p = master.run(userFunc1);
+			p.then( function(res) {
+				var p2 = chld1.run(function(resolve,reject,tran) {
+					r2 = chld1.addMasterRoot({ 2: 1, 3: 3, 4: 5} , {name: "Level1_Db1_Root1"} ); 
+					resolve("JOPAS");
+				});
+				p2.then( function() { resolve("TT"); });
+			});
+		};
+
+	var sp1 = new Promise(f2)
+		.then(function(res) {
+			r2._print();
+		});
+
+}
+
+function test1() {
+
+new DbPromise( db, function(resolve, reject, tran) {
+	setTimeout(function() {
+		console.log("EXECUTOR ONE");
+		resolve(1);
+	}, 1000);
+})
+.then(function(res, tran) {
+	console.log("MY 1st EVENT HANLDER ", res);
+	console.log("TRAN  ", tran.getGuid()+" "+tran.state());
+	return res+1;
+})
+.then(function(res, tran) {
+	console.log("MY 2nd EVENT HANLDER ", res);
+	console.log("TRAN  ", tran.getGuid()+" "+tran.state());
+	return res+1;
+})
+.then(function(res, tran) {
+	return new DbPromise(db, function(resolve, reject, tran) {  // здесь возвращаем ПРОМИС
+		console.log("EXECUTOR TWO");
+		resolve(100);
+	})
+})
+.then(function(res, tran) {
+	console.log("MY 3rd EVENT HANLDER ", res);
+	console.log("TRAN  ", tran.getGuid()+" "+tran.state());
+	return res+1;
+})
+.then(function(res, tran) {
+	console.log("MY 4th EVENT HANLDER ", res);
+	console.log("TRAN  ", tran.getGuid()+" "+tran.state());
+	return res+1;
+})
+;
+
+}
+
+function test3() {
+
+new DbPromise( db, function(resolve, reject, tran) {
+	//setTimeout(function() {
+		console.log("EXECUTOR ONE");
+		resolve(1);
+	//}, 1000);
+})
+.then(function(res, tran) {
+	console.log("MY 1st EVENT HANLDER ", res);
+	console.log("TRAN  ", tran.getGuid()+" "+tran.state());
+	return res+1;
+})
+.then(function(res, tran) {
+	console.log("MY 2nd EVENT HANLDER ", res);
+	console.log("TRAN  ", tran.getGuid()+" "+tran.state());
+	return res+1;
+})
+
+.then(function(res, tran) {
+	return new DbPromise(db, function(resolve, reject, tran) {  // здесь возвращаем ПРОМИС
+		console.log("EXECUTOR TWO");
+		resolve(100);
+	})
+})
+.then(function(res, tran) {
+	console.log("MY 3rd EVENT HANLDER ", res);
+	console.log("TRAN  ", tran.getGuid()+" "+tran.state());
+	return res+1;
+})
+.then(function(res, tran) {
+	console.log("MY 4th EVENT HANLDER ", res);
+	console.log("TRAN  ", tran.getGuid()+" "+tran.state());
+	return res+1;
+})
+;
+
+}
 
 
 var controller = new MemDbController();		// создаем контроллер базы
-var master = new MemDatabase(controller,undefined,{name: "MasterBase"});  	// создаем корневую базу
-var chld1_1 = new MemDatabase(controller,master.getGuid(),{name: "Level1_Db1"});
-var chld1_2 = new MemDatabase(controller,master.getGuid(),{name: "Level1_Db2"});
-var chld2_1 = new MemDatabase(controller,chld1_1.getGuid(),{name: "Level2_Db1"});
-var chld2_2 = new MemDatabase(controller,chld1_1.getGuid(),{name: "Level2_Db2"});
+var db = new MemDataBase(controller,undefined,{ name: "MasterBase"});  	// создаем корневую базу
 
-var r1 = master.addMasterRoot({1: 34, 2: 99 }, {name: "MasterBase_Root1"} );
+test3();
 
-chld1_1.startAsync().then(function(res) { 
-		chld1_1.subscribeRoots([r1.getGuid()]);
-		return chld1_1._remoteClient(true,false);
-	 })
-	.then( function(res) {
-		return chld2_1.startAsync();
+setTimeout( function() {
+	console.log(db);
+},500);
+
+	/*
+.then(function(res, tr) {
+		return new DbPromise(db,function(resolve,reject, tr) {
+		console.log("THIRD PROMISE EXECUTOR");
+		setTimeout(function() {
+			console.log("THIRD TIMEOUT");
+			resolve("OK3");
+		} 
+			,0);
+	} );
 	})
-	.then( function(res) {
-		chld2_1.subscribeRoots([r1.getGuid()]); 
-		return chld2_1._remoteClient(true,false);
-	})
-	.then( function(res) {
-			console.log("***DATA***");
-			for (var i=0; i<6; i++) {
-				var v = chld2_1.getRoot(r1.getGuid()).getData(i);
-				if (v) console.log(" ",i,": ",v);
-			}
-		});
-
+;
+*/
 
 
 /*
 
-
-
-var p = new MyPromise( function(resolve,reject) {
+var p = new MyPromise(db, function(resolve,reject, tr) {
 		setTimeout(function() {
 			resolve("OK");
 		} 
 			,50);
-	}).then( function(res) {
-		console.log(res);
 	});
-*/
 
+var p2 = p.then(function(res, tr) {
+	console.log("MY EVENT HANLDER ", res);
+	console.log("TRAN ", tr.tranGuid()+" "+tr.state());
+	return 1;
 
-/*
-var r1_2 = chld1_1.addMasterRoot({ 2: 1, 3: 3, 4: 5} , {name: "Level1_Db1_Root1"} );
+	}).then(function(res, tr) {
+		return new MyPromise(db,function(resolve,reject, tr) {
+		setTimeout(function() {
+			resolve("OK2");
+		} 
+			,50);
+	} );
+	});
 
-
-chld2_2.subscribeRoots([r1_2.getGuid()]).then(function(res) {
-	console.log("gogo DATA");
-
-	var r2_2 =  chld2_2.getRoot(r1_2.getGuid());
-	for (var i=0; i<6; i++) {
-		var v = r2_2.getData(i);
-		if (v) console.log("XXXX ",i,": ",v);	
-	}		
-
- });
-
-console.log("before");
-console.log(chld2_2);
-
-chld2_2._remoteClient(true,false).then( function(res){
-	console.log("PRINT DATA");
-	var r2_2 =  chld2_2.getRoot(r1_2.getGuid());
-	for (var i=0; i<6; i++) {
-		var v = r2_2.getData(i);
-		if (v) console.log(" ",i,": ",v);	
-	}	
-	console.log(chld2_2);
-});
-*/
-
-/*
-chld2_2.subscribeRoots([r1_2.getGuid()])
-	.then( function(res) {
-			var r2_2 =  chld2_2.getRoot(r1_2.getGuid());
-			chld2_2.start();
-			r2_2.setData(2,777);
-			chld2_2._remoteClient(true,true).then( function(res) {
-				console.log("PRINT DATA 2");
-				for (var i=0; i<6; i++) {
-					var v = r1_2.getData(i);
-					if (v) console.log(" ",i,": ",v);	
-				}	
-			});
-	
-			console.log("PRINT DATA");
-			for (var i=0; i<6; i++) {
-				var v = r2_2.getData(i);
-				if (v) console.log(" ",i,": ",v);	
-			}		
-				
+p2.then(function(res, tr) {
+	console.log("MY 2ND EVENT HANLDER ", res);
+	console.log("TRAN 2 ", tr.tranGuid()+" "+tr.state());
+	return 2;
 
 	});
 
 */
 
-
-/*
-r1_2.setData(0,777);
-chld1_1._genSendDeltas();
-*/

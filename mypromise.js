@@ -117,7 +117,7 @@ class MemDataBase {
 		//if (this.inTran()) 
 		//	return;
 
-		this._curTran = new MemTransaction(this);
+		if (!this._curTran) this._curTran = new MemTransaction(this);
 		this._curTran._start(extGuid);
 		
 	}
@@ -126,7 +126,7 @@ class MemDataBase {
 	commit(){
 
 		if (!this._curTran) {	
-			throw new Error("нельзя завершить незапущенную транзакцию");	
+			throw new Error("нельзя завершить незапущенную транзакцию Database: "+this._name);	
 		}
 		else {
 			this._curTran._commit();
@@ -162,9 +162,15 @@ class MemDataBase {
 			return p;
 
 		var that = this;
+
+		//return p;
+		
+
 		return p.then( function(res,tran) {
 			return that._remoteClient(true,false);
 		});
+		
+
 	}
 
 	_remoteClientPromise(packet) {
@@ -280,6 +286,23 @@ class MemDataBase {
 			}
 			else {
 				that._applyDeltas(packet.deltas); // применить дельты на данной БД
+
+				that._propDeltas("subs", packet.deltas,packet.db);	// разослать дельты подписчикам
+				if (packet.calls.length>0) {
+					// todo
+					// выполнение методов (возможно удаленных)
+					var rc = packet.calls[0];
+
+					funcresult = that[rc.name](rc.arg); // должен быть асинхронным ?
+					return funcresult;
+				}
+				that._genSendDeltas();
+				setTimeout( function() { // чтобы пришло после дельт
+					resolve(funcresult);
+				}, 100);
+
+
+				/*
 				that._propDeltas("subs", packet.deltas,packet.db).then( function(res) { // разослать дельты подписчикам
 					if (packet.calls.length>0) {
 						// todo
@@ -299,6 +322,7 @@ class MemDataBase {
 				}).then(function(res, tran){
 					resolve(funcresult);
 				});
+				*/
 
 			}
 
@@ -389,6 +413,19 @@ class MemDataBase {
 					resolve("foo"); }, 0);	
 			});	
 	}
+
+	// послать deltas, которые сгенерированны для db подписчикам
+	_newSendDeltas(data) {
+		var that = this;
+		
+		setTimeout( function() { 
+			for (var dbGuid in data) {
+				var db = that.getController()._databases[dbGuid];
+				db._applyDeltas(data[dbGuid]);
+			}
+		}, 0);	
+
+	}
 	
 	// сгенерировать и послать все дельты для данной бд
 	_genSendDeltas() {
@@ -417,7 +454,7 @@ class MemDataBase {
 		}		
 		// отправить дельты	
 
-		return this._sendDeltas(allSubs); 
+		this._newSendDeltas(allSubs); 
 	}
 
 	// разослать deltas, которые сгенерированны для db подписчикам
@@ -457,7 +494,7 @@ class MemDataBase {
 
 		}
 		// отправить дельты	
-		return this._sendDeltas(allSubs); 
+		return this._newSendDeltas(allSubs); 
 
 	}
 
@@ -499,11 +536,11 @@ class MemTransaction {
 		if (this._state == "commited") {
 			throw new Error("нельзя запустить завершенную транзакцию");
 		}
-		var ng = guid();
+		//var ng = guid();
 		if (this._tranCount==0) {
-			this._tranGuid = (extGuid ? extGuid : ng);
+			this._tranGuid = (extGuid ? extGuid : guid());
 			this._state = "started";
-			if (guid) this._external = true;
+			if (extGuid) this._external = true;
 		}
 
 		this._tranCount++;
@@ -512,7 +549,7 @@ class MemTransaction {
 
 	_commit() {
 		if (this._state == "commited") {
-			throw new Error("нельзя завершить уже завершенную транзакцию");
+			throw new Error("нельзя завершить уже завершенную транзакцию, Database: "+this._memDb._name);
 		}
 
 		this._tranCount--;
@@ -697,15 +734,18 @@ class RootLog {
 class DbPromise {
 	constructor(memDb, func, dbgTech) {
 
+		this._state = "waiting";
+		this._tech = dbgTech;
+
 		if (memDb instanceof MemDataBase) {
 			this._memDb = memDb;
 			// стартовать транзакцию (предполоагаем, что НОВУЮ!)
-			this._memTran = this._memDb.start();
+			if (!this._tech)
+				this._memTran = this._memDb.start();
 		}
 
-		this._num = this._memTran.getDb()._incPromise(this);
-		this._state = "waiting";
-		this._tech = dbgTech;
+		this._num = this._memDb._incPromise(this);
+
 
 		var that = this;
 
@@ -714,7 +754,8 @@ class DbPromise {
 				setTimeout(function() {
 					if (that._resolve) 	
 						that._resolve(res,that._memTran); 
-					that._memDb.commit();
+					if (!that._tech)
+						that._memDb.commit();
 					that._state = "resolved";
 				},0);
 		}
@@ -782,9 +823,9 @@ class DbPromise {
 
 function test2() {
 
-	var controller = new MemDbController();		// создаем контроллер базы
-	var master = new MemDataBase(controller,undefined,{ name: "MasterBase"});  	// создаем корневую базу
-	var chld1 = new MemDataBase(controller,master.getGuid(),{name: "Level1_Db1"});
+	controller = new MemDbController();		// создаем контроллер базы
+	master = new MemDataBase(controller,undefined,{ name: "MasterBase"});  	// создаем корневую базу
+	chld1 = new MemDataBase(controller,master.getGuid(),{name: "Level1_Db1"});
 
 	var r1,r2;
 
@@ -804,13 +845,18 @@ function test2() {
 
 	var f2 = function(resolve, reject) {
 			var p = master.run(userFunc1);
+			
 			p.then( function(res) {
+
+
 				var p2 = chld1.run(function(resolve,reject,tran) {
 					r2 = chld1.addMasterRoot({ 2: 1, 3: 3, 4: 5} , {name: "Level1_Db1_Root1"} ); 
 					resolve("JOPAS");
 				});
+
 				p2.then( function() { resolve("TT"); });
 			});
+			
 		};
 
 	var sp1 = new Promise(f2)
@@ -819,6 +865,7 @@ function test2() {
 		});
 
 }
+
 
 function test1() {
 
@@ -900,8 +947,10 @@ new DbPromise( db, function(resolve, reject, tran) {
 
 var controller = new MemDbController();		// создаем контроллер базы
 var db = new MemDataBase(controller,undefined,{ name: "MasterBase"});  	// создаем корневую базу
+var master;
+var chld1;
 
-test3();
+test2();
 
 setTimeout( function() {
 	console.log(db);

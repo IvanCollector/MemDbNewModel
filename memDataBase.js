@@ -1,5 +1,6 @@
 'use strict';
 
+var _dbgTr = false;
 
 function guid() {
 
@@ -41,6 +42,8 @@ class MemDataBase {
 		this._curTran = undefined;
 		this._readOnlyMode = false;
 		this._calls = [];
+		
+		this._isLog = true;	// логировать изменения в бд
 
 		this._promiseCount = 0;
 		this.promises = {};
@@ -99,6 +102,7 @@ class MemDataBase {
 		if (!this._curTran) {
 			this._curTran = new MemTransaction(this);
 			this._curTran._start();
+			console.log("START ",this._name," :",this._curTran.getGuid());
 		}
 		else 
 			this._curTran._start();
@@ -117,22 +121,52 @@ class MemDataBase {
 		if (!this._curTran) {
 			this._curTran = new MemTransaction(this);
 			this._curTran._start(extGuid);
+			
+			console.log("EXTSTART ",this._name," :",this._curTran.getGuid());
 		}		
+	}
+	
+	_commitExternal(extGuid) {
+		
+		
 	}
 
 
 	commit(){
-		if (!this._curTran) {	
+		if (!this._curTran) 
 			throw new Error("нельзя завершить незапущенную транзакцию Database: "+this._name);	
+
+		var that = this;
+		if (this._curTran.getTranCount() == (this._memCommit ? 1 : 2) && this._curTran.isExternal()) {
+			var extResolve = true;
 		}
-		else {
-			if (this._curTran.getTranCount()==1 && this.getParentGuid())
-				this._remoteClient(true,true); // отправляем коммит паренту todo переделать...
-			this._curTran._commit();
-			if (this._curTran.state() == "commited") {
-				this._curTran = undefined;
+		if (this._curTran.getTranCount()==1 && this.getParentGuid()) {	// коммит требует предварительного коммита парента
+				this._readOnlyMode = true;
+				return this._remoteClient(true,true).then( function (res, tran) {
+					that._readOnlyMode = false;
+					
+					that._curTran._commit();
+					console.log("COMMIT ",that._name," :",that._curTran.getGuid());
+					if (that._curTran.state() == "commited") {
+						that._curTran = undefined;
+						if (that._memResolve) 
+							that._memResolve();	
+					}						
+				});
 			}
+		else {
+			this._curTran._commit();
+			console.log("COMMIT ",that._name," :",that._curTran.getGuid());
+			if (this._curTran.state() == "commited") {	
+				this._curTran = undefined;
+				if (this._memResolve) 
+					this._memResolve();			
+			}
+
+			if (extResolve && this._memResolve)
+				this._memResolve();
 		}
+
 	}
 
 	curTran(){
@@ -146,31 +180,27 @@ class MemDataBase {
 	get tranGuid() {
 		return this._curTran ? this._curTran.getGuid(): undefined;
 	}
-
-
+	
+	isLogActive() {
+		return this._isLog;
+	}
+	
 	run(userFunc) {
+		var that = this;		
 		
-		var wrapFn = function(resolve,reject,tran) {
-			setTimeout(function() {
-				userFunc(resolve,reject,tran);
-			},0);
-		}
-		
-		var p = new DbPromise(this, wrapFn);
-		
-		if (!this.getParentGuid())
-			return p;
+		this.start();
+		var tran = this.curTran(); 
+		return new Promise(function(resolve,reject) {
+				setTimeout(function() {
+					that._memResolve = resolve;
+					userFunc(tran);
+					if (that.getParentGuid()) {
+						var p = that._remoteClient(true,false);
+					}
+					that.commit();
 
-		var that = this;
-
-		//return p;
-		
-
-		return p.then( function(res,tran) {
-			return that._remoteClient(true,false);
-		});
-		
-
+				},0);				
+			});		
 	}
 
 	_remoteClientPromise(packet) {
@@ -185,30 +215,24 @@ class MemDataBase {
 					that._readOnlyMode = false; // выйти из ридонли пока обработка колбэков
 					if (packet.calls.length>0) // todo переделать на N элементов
 						packet.calls[0].resolve(res.results[0]); // todo рекурсия асинхронная
-				
-				/*
-					if (that._calls.length==0 && !packet.commit) {
-						return that._remoteClient(true,true);		// отправить команду завершения транзакции
-					}
-					*/
 					
 				}).then(function(res, tran) {
-					console.log("END OF REMOTE CLIENT "+packet.commit,"   ",packet);
+					//console.log("END OF REMOTE CLIENT "+packet.commit,"   ",packet);
 					resolve(res);
 				});
 				
 			},0);			
-		});
+		}, packet.commit); // true = без транзакции
 	}
 	
 	// вызов с клиента - генерирует дельты и добавляет удаленные вызовы, которые буферизовались
 	// async - (true) асинхронный 
 	// commit - коммитить после применения
-	_remoteClient(async, commit) {
+	_remoteClient(async, commit, deltas) {
 
 		if (!this.inTran()) 
 			throw new Error("can't exec a remote call: database is not in transaction");	
-		if (this.isReadOnly()) 
+		if (!commit && this.isReadOnly()) 
 			throw new Error("can't exec a remote call: database is in readonly mode");
 			
 		var that = this;
@@ -222,11 +246,16 @@ class MemDataBase {
 			calls : []						// массив удаленных вызовов
 		};
 
-		for (var rg in this._roots) {		// сгенерировать дельты
-			var root = this._roots[rg];
-			var d = root._genDelta();
-			if (d) packet.deltas.push(d);
-		}	
+		if (deltas) {
+			packet.deltas = deltas;
+		}
+		else {
+			for (var rg in this._roots) {		// сгенерировать дельты
+				var root = this._roots[rg];
+				var d = root._genDelta();
+				if (d) packet.deltas.push(d);
+			}	
+		}
 		if (this._calls.length>0) {
 			packet.calls = this._calls.slice(0,this._calls.length);
 		}
@@ -240,90 +269,43 @@ class MemDataBase {
 		var that = this;
 		this._startExternal(packet.tran, packet.db);
 		// todo очередь сделать
-		return this._exec(packet).then( function(res, tran){
-			var r = {};
-			r.results = [];
-			r.results.push(res);
-
-			if (packet.commit)
-				that.commit();
-
-			return r;
-		});
-		//return p; 
+		var p = this._exec(packet);
+		if (packet.commit)
+			this.commit();
+		return p;
 	}
-
 
 	// отправить на мастер дельты, дождаться ответа, выполнить вызовы, сформировать новые дельты и разослать их
 	_exec(packet) {
 		var that = this;
 		var funcresult = null;
-		var p = new DbPromise(this, function(resolve,reject,tran) {
-			var dnew = [];
-			for (var i=0; i<packet.deltas.length; i++) {
+		this.start();
+		var p = new Promise(function(resolve,reject) {
+			for (var i=0, dnew = []; i<packet.deltas.length; i++) {
 				var d = that.getRoot(packet.deltas[i].guid);
-				if (d && !d.isMaster()) {
-					dnew.push(packet.deltas[i]); // если рут не мастер, то надо запомнить его, чтобы применить выше
-				}
+				if (d && !d.isMaster()) 
+					dnew.push(packet.deltas[i]); 		// если рут - не мастер, то надо запомнить его, чтобы послать дельту паренту
+			}	
+			if (dnew.length>0) 
+				that._remoteClient(false,false,dnew); 	// отправить дельты паренту
+				
+			that._applyDeltas(packet.deltas);			// применить дельты на данной БД	
+			
+			that._propDeltas("subs", packet.deltas,packet.db);	// разослать дельты подписчикам
+	
+			var rc = packet.calls[0];
+			if (rc) {
+				funcresult = that[rc.name](rc.arg); 	// должен быть асинхронным ?					
+				that._genSendDeltas();					// сгенерировать и разослать дельты после выполнения методов
 			}
-			if (dnew.length>0) {
-				var p = that._propDeltas("parent", dnew); 	// отправить дельты паренту
-				p.then( function(res) {
-					// todo
-					// применить дельты на данной БД
-					that._applyDeltas(packet.deltas);
-					// разослать дельты подписчикам
-					return that._propDeltas("subs", packet.deltas,packet.db);
-					
-				}).then( function(res) {
-					// todo
-					// выполнение методов (возможно удаленных)
-					// генерация и рассылка дельт в парент и подписчикам 
-					//resolve(res);
-				});
+			
+			that._memResolve = function() {				// запомнить функцию разрешения промиса (вызывается в commit)
+				resolve({ results: [funcresult] });
+				that._memResolve = null;
 			}
-			else { // не отправляем выше
-				that._applyDeltas(packet.deltas); // применить дельты на данной БД
-				that._propDeltas("subs", packet.deltas,packet.db);	// разослать дельты подписчикам
-				if (packet.calls.length>0) {
-					// todo
-					// выполнение методов (возможно удаленных)
-					var rc = packet.calls[0];
-
-					funcresult = that[rc.name](rc.arg); // должен быть асинхронным ?
-					//return funcresult;
-				}
-				that._genSendDeltas();	// сгенерировать и разослать дельты после выполнения методов
-				setTimeout( function() { // чтобы пришло после дельт
-					resolve([funcresult]);
-				}, 100);
-
-
-				/*
-				that._propDeltas("subs", packet.deltas,packet.db).then( function(res) { // разослать дельты подписчикам
-					if (packet.calls.length>0) {
-						// todo
-						// выполнение методов (возможно удаленных)
-						var rc = packet.calls[0];
-
-						funcresult = that[rc.name](rc.arg); // должен быть асинхронным ?
-						return funcresult;
-
-					}
-				}).then(function(res){
-					// генерация и рассылка дельт в парент и подписчикам 
-					return that._genSendDeltas();
-					//return res;
-					//return that._propDeltas("subs", packet.deltas,packet.db); // todo еще и в парент
-
-				}).then(function(res, tran){
-					resolve(funcresult);
-				});
-				*/
-
-			}
-
+			that._memCommit = packet.commit;
 		});
+		this.commit();
 		return p;
 	}
 
@@ -380,7 +362,11 @@ class MemDataBase {
 	// применить дельты к бд,
 	// deltas - массив дельт, одна дельта = один рут
 	_applyDeltas(deltas) {
-		console.log("memDB._applyDeltas "+this._name, deltas);
+		//console.log("memDB._applyDeltas "+this._name, deltas);
+		if (!this.curTran())
+			throw new Error("Can't apply deltas without transaction");
+		var tr = this.curTran().getGuid();
+		this._isLog = false;
 		for (var i=0; i<deltas.length; i++) {
 			var d = deltas[i];
 			if (d.add) { // дельта с новым рутом
@@ -390,10 +376,11 @@ class MemDataBase {
 				// применить новые значения дельты
 				var root = this.getRoot(d.guid);
 				for (var idx in d.data) {
-					root.setData(idx,d.data[idx]);
+					root.setData(idx,d.data[idx], tr, true);
 				}
 			}
 		}
+		this._isLog = true;
 	}
 
 
@@ -427,7 +414,7 @@ class MemDataBase {
 	
 	// сгенерировать и послать все дельты для данной бд
 	_genSendDeltas() {
-		console.log("MemDb._genSendDeltas "+this._name);
+		//console.log("MemDb._genSendDeltas "+this._name);
 
 		var allSubs = {}; // гуиды всех подписчиков
 		for (var rg in this._roots) {
@@ -461,7 +448,7 @@ class MemDataBase {
 	// srcGuid - гуид дб-источника, который исключается из рассылки (если заполнен)
 	_propDeltas(direction, deltas, srcGuid) {
 		var that = this;
-		console.log("MemDb._propDeltas "+this._name,deltas);
+		//console.log("MemDb._propDeltas "+this._name,deltas);
 
 		var allSubs = {}; // гуиды всех подписчиков
 		if (direction == "all" || direction == "subs") {

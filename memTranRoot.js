@@ -23,12 +23,15 @@ class MemTransaction {
 	getTranCount() {
 		return this._tranCount;
 	}
+	
+	isExternal() {
+		return (this._external ? true : false);
+	}
 
 	_start(extGuid) {
 		if (this._state == "commited") {
 			throw new Error("нельзя запустить завершенную транзакцию");
 		}
-		//var ng = guid();
 		if (this._tranCount==0) {
 			this._tranGuid = (extGuid ? extGuid : guid());
 			this._state = "started";
@@ -103,9 +106,10 @@ class RootDb {
 		return this._data[idx];
 	}
 
-	setData(idx, value, tranGuid) {
+	// todo сделать отдельный метод, который пишет даже если ридонли и выкинуть applyMode
+	setData(idx, value, tranGuid, applyMode) {
 		var db = this.getDb();
-		if (db.isReadOnly()) 
+		if (db.isReadOnly() && !applyMode) 
 			throw new Error("can't exec setData: db "+db._name+" is in readonly mode");
 
 		if (!db.inTran()) 
@@ -114,8 +118,9 @@ class RootDb {
 		var tg = db._curTran.getGuid();
 		if (tg && (tg === tranGuid)) {
 			var ov = this._data[idx];
-			this._data[idx] = value;	
-			this._log._addModifValue(idx,ov,value);
+			this._data[idx] = value;
+			if (!applyMode)
+				this._log._addModifValue(idx,ov,value);
 		}
 		else 
 			throw new Error("can't modify data " + (tg ? "in scope of a wrong transaction " : "without transaction"));
@@ -200,17 +205,21 @@ class RootLog {
 	
 	// добавить в лог подписку базы subDbGuid на рут этого лога
 	_addSubscription(subDbGuid) {
+		if (this._root.getDb().isLogActive()) {
 		this._newSubsGuids.push(subDbGuid);
+		}
 	}
 	
 	_addModifValue(idx, ov, nv) {
-		if (ov==nv) return;
-		var logElem = {};
-		logElem.type = "m";
-		logElem.index = idx;
-		logElem.ov = ov;
-		logElem.nv = nv;
-		this._log.push(logElem);		
+		if (this._root.getDb().isLogActive()) {
+			if (ov==nv) return;
+			var logElem = {};
+			logElem.type = "m";
+			logElem.index = idx;
+			logElem.ov = ov;
+			logElem.nv = nv;
+			this._log.push(logElem);	
+		}		
 	}
 	
 	_clear() {

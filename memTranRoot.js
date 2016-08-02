@@ -1,5 +1,6 @@
 'use strict';
 
+/*
 class MemTransaction {
 	constructor(memDb){
 		this._tranCount = 0;
@@ -27,14 +28,19 @@ class MemTransaction {
 	isExternal() {
 		return (this._external ? true : false);
 	}
+	
+	sourceGuid() {
+		return this._sourceGuid;
+	}
 
-	_start(extGuid) {
+	_start(extGuid,sourceGuid) {
 		if (this._state == "commited") {
 			throw new Error("нельзя запустить завершенную транзакцию");
 		}
 		if (this._tranCount==0) {
 			this._tranGuid = (extGuid ? extGuid : guid());
 			this._state = "started";
+			this._sourceGuid = sourceGuid;
 			if (extGuid) this._external = true;
 		}
 
@@ -57,7 +63,7 @@ class MemTransaction {
 
 }
 
-
+*/
 
 class RootDb {
 	constructor(db, data, parentGuid, parentVersion, params) {
@@ -115,7 +121,7 @@ class RootDb {
 		if (!db.inTran()) 
 			throw new Error("can't exec setData: db "+db._name+" not in scope of transaction");
 
-		var tg = db._curTran.getGuid();
+		var tg = db.getTranGuid();
 		if (tg && (tg === tranGuid)) {
 			var ov = this._data[idx];
 			this._data[idx] = value;

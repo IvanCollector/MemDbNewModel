@@ -40,13 +40,16 @@ class MemDataBase {
 		this._roots = {};
 		// транзакции
 		this._curTran = undefined;
+		this._curTranGuid = undefined;
 		this._readOnlyMode = false;
 		this._calls = [];
+		// очередь
+		this._queue = [];
 		
 		this._isLog = true;	// логировать изменения в бд
 
-		this._promiseCount = 0;
-		this.promises = {};
+		//this._promiseCount = 0;
+		//this.promises = {};
 
 		controller._regMemDb(this);
 
@@ -58,7 +61,7 @@ class MemDataBase {
 	// добавить мастер рут с данными data
 	addMasterRoot(data, params) {
 
-		if (!this._curTran) throw new Error("нельзя выполнить addMasterRoot: транзакция не открыта");
+		if (!this._curTranGuid) throw new Error("нельзя выполнить addMasterRoot: транзакция не открыта");
 		if (this.isReadOnly()) throw new Error("нельзя выполнить addMasterRoot: база данных в режиме ReadOnly");
 
 		var r = new RootDb(this,data,undefined,undefined,params);	
@@ -98,136 +101,188 @@ class MemDataBase {
 	// Методы управления транзакцией
 
 	start() {
+		if (!this._curTranGuid) {
+			this._curTranGuid = guid();
+			//console.log("START ",this._name," :",this._curTranGuid);
+		}
 
+	/*
 		if (!this._curTran) {
 			this._curTran = new MemTransaction(this);
 			this._curTran._start();
 			console.log("START ",this._name," :",this._curTran.getGuid());
-		}
-		else 
-			this._curTran._start();
-
+		}	
 		return this._curTran;
+	*/
 	}
-
 
 	// стартовать внешнюю транзакцию с гуидом guid
 	// sourceGuid - гуид ДБ-источника транзакции
 	_startExternal(extGuid, sourceGuid) {
+		if (this.inTran() && extGuid != this._curTranGuid)
+			throw new Error("can't start external transaction")
+		this._readOnlyMode = false;
+		
+		if (!this._curTranGuid) {
+			this._curTranGuid = extGuid;
+			this._curTranExt = true;
+			this._curTranSrc = sourceGuid;
+			//this._curTran._start(extGuid,sourceGuid);
+			
+			console.log("EXTSTART ",this._name," :",this._curTranGuid);
+		}		
+	/*
 		if (this.inTran() && extGuid != this.tranGuid)
 			throw new Error("can't start external transaction")
 		this._readOnlyMode = false;
 		
 		if (!this._curTran) {
 			this._curTran = new MemTransaction(this);
-			this._curTran._start(extGuid);
+			this._curTran._start(extGuid,sourceGuid);
 			
 			console.log("EXTSTART ",this._name," :",this._curTran.getGuid());
 		}		
+		*/
 	}
 	
-	_commitExternal(extGuid) {
-		
-		
+	_getAllSubs() {
+		var allSubs = {};
+		for (var g in this._roots) 
+			for (var g2 in this._roots[g].__subscribers) 
+				allSubs[g2] = 1;
+		return allSubs;
 	}
+	
+	commit(res){
+		if (!this._curTranGuid) 
+			throw new Error("нельзя завершить незапущенную транзакцию Database: "+this._name);	
 
+		var that = this;
+		var fromParent = this._curTranExt && (this._curTranSrc === this.getParentGuid());
 
-	commit(){
+		if (this.getParentGuid() && !fromParent) {	// коммит требует предварительного коммита парента
+				this._readOnlyMode = true;
+				return this._remoteClient(true,true).then( function (res1) {
+					that._readOnlyMode = false;				
+					that._curTranGuid = undefined;
+
+					var subs = that._getAllSubs();
+					for (var g in subs) that._callChild(g,undefined,1);
+					
+					return res;
+				});
+			}
+		else {
+			that._curTranGuid = undefined; //console.log("COMMIT ",that._name," :",that._curTran.getGuid());
+			
+			var subs = that._getAllSubs();
+			for (var g in subs) that._callChild(g,undefined,1);
+			
+			return res;
+		}
+
+	}
+	
+	OLDcommit(res){
 		if (!this._curTran) 
 			throw new Error("нельзя завершить незапущенную транзакцию Database: "+this._name);	
 
 		var that = this;
-		if (this._curTran.getTranCount() == (this._memCommit ? 1 : 2) && this._curTran.isExternal()) {
-			var extResolve = true;
-		}
-		if (this._curTran.getTranCount()==1 && this.getParentGuid()) {	// коммит требует предварительного коммита парента
+		var fromParent = this._curTran.isExternal() && (this._curTran.sourceGuid() === this.getParentGuid());
+
+		if (this.getParentGuid() && !fromParent) {	// коммит требует предварительного коммита парента
 				this._readOnlyMode = true;
-				return this._remoteClient(true,true).then( function (res, tran) {
+				return this._remoteClient(true,true).then( function (res1) {
 					that._readOnlyMode = false;
 					
-					that._curTran._commit();
-					console.log("COMMIT ",that._name," :",that._curTran.getGuid());
+					that._curTran._commit(); //console.log("COMMIT ",that._name," :",that._curTran.getGuid());
 					if (that._curTran.state() == "commited") {
 						that._curTran = undefined;
-						if (that._memResolve) 
-							that._memResolve();	
-					}						
+					}	
+
+					var subs = that._getAllSubs();
+					for (var g in subs) that._callChild(g,undefined,1);
+					
+					return res;
 				});
 			}
 		else {
-			this._curTran._commit();
-			console.log("COMMIT ",that._name," :",that._curTran.getGuid());
+			this._curTran._commit(); //console.log("COMMIT ",that._name," :",that._curTran.getGuid());
 			if (this._curTran.state() == "commited") {	
-				this._curTran = undefined;
-				if (this._memResolve) 
-					this._memResolve();			
+				this._curTran = undefined;		
 			}
-
-			if (extResolve && this._memResolve)
-				this._memResolve();
+			
+			var subs = that._getAllSubs();
+			for (var g in subs) that._callChild(g,undefined,1);
+			
+			return res;
 		}
 
 	}
-
-	curTran(){
+	
+	OLDcurTran(){
 		return this._curTran;
 	}
 
 	inTran() {
-		return (this._curTran!=undefined);
+		return (this._curTranGuid!=undefined);
 	}
 
 	get tranGuid() {
-		return this._curTran ? this._curTran.getGuid(): undefined;
+		return this._curTranGuid;
+	}
+	
+	getTranGuid() {
+		return this._curTranGuid;
 	}
 	
 	isLogActive() {
 		return this._isLog;
 	}
 	
-	run(userFunc) {
-		var that = this;		
-		
-		this.start();
-		var tran = this.curTran(); 
+	// очередь
+	// fn - возвращает промис
+	_toQueue(fn, tran) {
+		var that = this;
+		function resolveNext() {
+			// поставить следующий из очереди ГДЕ КОММИТИТСЯ ТРАНЗАКЦИЯ?
+			if (that.getTranGuid()) // если транзакция еще открыта, то не ищем в очереди
+				return;
+			if (that._queue.length>0) {
+				var qelem2 = that._queue[0];
+				that._queue.splice(0,1); // удаляем отработанный элемент очереди
+				return qelem2.fn().then(function(res2) {
+					qelem2.fresolve(res2);
+				});
+			}
+		}		
 		return new Promise(function(resolve,reject) {
-				setTimeout(function() {
-					that._memResolve = resolve;
-					userFunc(tran);
-					if (that.getParentGuid()) {
-						var p = that._remoteClient(true,false);
-					}
-					that.commit();
-
-				},0);				
-			});		
+			if (that.getTranGuid() && (that.getTranGuid() !== tran))  // если в другой транзакции, то ставим в очередь
+				that._queue.push({ fn: fn, tran: tran, fresolve: function(res) { resolve(res); resolveNext(); }  });
+			else // если в этой или без транзакции, то выполняем
+				fn().then(function(res) { resolve(res); resolveNext(); });
+		});
 	}
-
+	
 	_remoteClientPromise(packet) {
 		var that = this;
 		this._readOnlyMode = true; // в режим ридонли пока от парента не вернется ответ
-		return new DbPromise(this, function(resolve,reject, tran) {
-			
+		return new Promise(function(resolve,reject) {		
 			setTimeout( function() {
 				var parent = that.getController().getDb(that.getParentGuid());
 				var p = parent._remoteParent(packet);
-				p.then( function(res, tran) {
+				p.then( function(res) {
 					that._readOnlyMode = false; // выйти из ридонли пока обработка колбэков
 					if (packet.calls.length>0) // todo переделать на N элементов
-						packet.calls[0].resolve(res.results[0]); // todo рекурсия асинхронная
-					
-				}).then(function(res, tran) {
-					//console.log("END OF REMOTE CLIENT "+packet.commit,"   ",packet);
+						return that._exec({calls: [ { fn: function() { packet.calls[0].resolve(res.results[0]); }  }] },true);
+						//packet.calls[0].resolve(res.results[0]); // todo рекурсия асинхронная	
+				}).then(function(res) {
 					resolve(res);
-				});
-				
+				});	
 			},0);			
-		}, packet.commit); // true = без транзакции
+		}); 
 	}
 	
-	// вызов с клиента - генерирует дельты и добавляет удаленные вызовы, которые буферизовались
-	// async - (true) асинхронный 
-	// commit - коммитить после применения
 	_remoteClient(async, commit, deltas) {
 
 		if (!this.inTran()) 
@@ -239,14 +294,14 @@ class MemDataBase {
 		// создать пакет транзакции удаленного вызова и передать его паренту
 		var packet = { 
 			db : this.getGuid(),
-			tran : this.tranGuid,	
+			tran : this.getTranGuid(),	
 			async : async ? 1 : 0,			// вызов асинхронный или синхронный
 			commit : commit ? 1 : 0,		// коммитить транзакцию или нет
 			deltas : [],					// массив дельт
 			calls : []						// массив удаленных вызовов
 		};
 
-		if (deltas) {
+		if (deltas!==undefined) {
 			packet.deltas = deltas;
 		}
 		else {
@@ -260,55 +315,150 @@ class MemDataBase {
 			packet.calls = this._calls.slice(0,this._calls.length);
 		}
 		// todo ВРЕМЕННО
-		 this._calls = [];		
+		this._calls = [];		
 
 		return this._remoteClientPromise(packet);
 	}
 	
+	
+	_execChild(packet) {
+		var that = this;
+		return this._toQueue(function() {
+			return new Promise (function(resolve,reject) {
+				//setTimeout(function() {
+					that._execChild2.apply(that, [packet]);
+					resolve();
+				//},0);
+			});
+		}, packet.tran);
+	}
+	
+	_execChild2(packet) {
+		this._startExternal(packet.tran, packet.db);
+		// todo очередь сделать	
+		
+		var deltas = packet.deltas ? packet.deltas : [];
+		this._applyDeltas(deltas);							// применить дельты на данной БД
+
+		this._propDeltas("subs", deltas, packet.db);	// разослать дельты подписчикам
+		
+		if (packet.commit)
+			this.commit(res);		
+	}
+	
+	_callChild(dbGuid, deltas, commit) {	
+
+		var packet = { 
+			db : this.getGuid(),
+			tran : this.getTranGuid(),	
+			async : 1,						// вызов асинхронный или синхронный
+			commit : commit ? 1 : 0,		// коммитить транзакцию или нет
+			deltas : deltas,				// массив дельт
+			calls : []						// массив удаленных вызовов
+		};
+		
+		var db = this.getController()._databases[dbGuid];
+		db._execChild(packet);		
+	}
+	
 	_remoteParent(packet) {
+		var that = this;
+		return this._toQueue(function() {
+			return that._remoteParent2.apply(that, [packet]);
+		}, packet.tran);
+	}
+	
+	_remoteParent2(packet) {
 		var that = this;
 		this._startExternal(packet.tran, packet.db);
 		// todo очередь сделать
-		var p = this._exec(packet);
-		if (packet.commit)
-			this.commit();
-		return p;
+		
+		return this._exec(packet)
+		.then(function(res) {
+			if (packet.commit)
+				return that.commit(res);
+			else return res;
+		})
+		.then(function(res) {
+			return new Promise( function(resolve,reject) {
+				setTimeout( function() {
+					//if (packet.commit)
+					//	that.commit();					
+					resolve(res);
+				},0);
+			});
+			
+		});
 	}
 
-	// отправить на мастер дельты, дождаться ответа, выполнить вызовы, сформировать новые дельты и разослать их
-	_exec(packet) {
+	run(userFunc) {
 		var that = this;
-		var funcresult = null;
+		
+		return this._toQueue(function() {
+			return that._run2.apply(that, [userFunc]);
+		}, undefined);
+	}
+	
+	_run2(userFunc) {
+		var that = this;		
 		this.start();
-		var p = new Promise(function(resolve,reject) {
-			for (var i=0, dnew = []; i<packet.deltas.length; i++) {
-				var d = that.getRoot(packet.deltas[i].guid);
+		var p =  this._exec( {calls: [{ fn: userFunc }] })
+		.then(function(res) { 
+			console.log(" RESOLVE RUN ",that._name, userFunc);
+			return that.commit(); 
+		});		
+		return p;	
+	}	
+	
+	_exec(packet) {
+		var that = this, funcresult = null;
+
+		var deltas = packet.deltas ? packet.deltas : [];
+		if (deltas.length>0) {
+			for (var i=0, dnew = []; i<deltas.length; i++) {
+				var d = this.getRoot(packet.deltas[i].guid);
 				if (d && !d.isMaster()) 
-					dnew.push(packet.deltas[i]); 		// если рут - не мастер, то надо запомнить его, чтобы послать дельту паренту
+					dnew.push(deltas[i]); 				// если рут - не мастер, то надо запомнить его, чтобы послать дельту паренту
 			}	
 			if (dnew.length>0) 
-				that._remoteClient(false,false,dnew); 	// отправить дельты паренту
+				this._remoteClient(true,false,dnew); 	// отправить дельты паренту
 				
-			that._applyDeltas(packet.deltas);			// применить дельты на данной БД	
+			this._applyDeltas(deltas);					// применить дельты на данной БД	
 			
-			that._propDeltas("subs", packet.deltas,packet.db);	// разослать дельты подписчикам
-	
-			var rc = packet.calls[0];
-			if (rc) {
-				funcresult = that[rc.name](rc.arg); 	// должен быть асинхронным ?					
-				that._genSendDeltas();					// сгенерировать и разослать дельты после выполнения методов
+			this._propDeltas("subs", deltas,packet.db);	// разослать дельты подписчикам
+		}
+		
+		var rc = packet.calls[0], p;
+		if (rc) {
+			if (rc.fn) {	// client		
+				p = new Promise(function(resolve,reject) {
+					rc.fn();
+					resolve();
+				});
 			}
-			
-			that._memResolve = function() {				// запомнить функцию разрешения промиса (вызывается в commit)
-				resolve({ results: [funcresult] });
-				that._memResolve = null;
-			}
-			that._memCommit = packet.commit;
-		});
-		this.commit();
-		return p;
-	}
+			else		// server
+				p = new Promise(function(resolve,reject) {
+					resolve( { results: [that[rc.name](rc.arg)] }); // должен быть асинхронным ?	
+				});
 
+			return p.then( function(res) {
+				var ds = that._genSendDeltas();					// сгенерировать и разослать дельты после выполнения методов
+				if (that.getParentGuid()) 
+					return that._remoteClient(true,false,ds).then(function(res1) {
+						return res; // todo усовершенствовать для случая каскадных изменений
+					});
+				else {
+					// todo ПЕРЕДЕЛАТЬ - ЭТО НЕПРАВИЛЬНО
+					//that._genSendDeltas();					// сгенерировать и разослать дельты после выполнения методов
+					return res;
+				}
+			});	
+
+		}
+		else
+			return new Promise(function(resolve,reject) { resolve(); });
+
+	}
 
 
 	_memRemote(obj) {
@@ -331,7 +481,7 @@ class MemDataBase {
 			throw new Error("can't exec subscribeRoots: database is in readonly mode");
 
 		var that = this;
-		return new DbPromise(this, function(resolve, reject, tran) {
+		return new Promise(function(resolve, reject) {
 				var a = { subDbGuid: that.getGuid(), rootGuids: rootGuids }
 				var o = { name: "_subscribeRootsParentSide", arg: a, resolve: function(res) {
 					var resRoots = [];
@@ -362,10 +512,12 @@ class MemDataBase {
 	// применить дельты к бд,
 	// deltas - массив дельт, одна дельта = один рут
 	_applyDeltas(deltas) {
-		//console.log("memDB._applyDeltas "+this._name, deltas);
-		if (!this.curTran())
+		//console.log("memDB._applyDeltas "+this._name, deltas);	
+		
+		if (!this.inTran())
 			throw new Error("Can't apply deltas without transaction");
-		var tr = this.curTran().getGuid();
+			
+		var tr = this.getTranGuid();
 		this._isLog = false;
 		for (var i=0; i<deltas.length; i++) {
 			var d = deltas[i];
@@ -388,7 +540,7 @@ class MemDataBase {
 	_sendDeltas(data) {
 		var that = this;
 		
-		return new DbPromise(this, function(resolve, reject, tran) {
+		return new Promise(function(resolve, reject, tran) {
 				// эмулируем удаленный вызов
 				setTimeout( function() { 
 					for (var dbGuid in data) {
@@ -405,8 +557,11 @@ class MemDataBase {
 		
 		setTimeout( function() { 
 			for (var dbGuid in data) {
+			/*
 				var db = that.getController()._databases[dbGuid];
 				db._applyDeltas(data[dbGuid]);
+			*/
+				that._callChild(dbGuid,data[dbGuid],0);
 			}
 		}, 0);	
 
@@ -417,9 +572,13 @@ class MemDataBase {
 		//console.log("MemDb._genSendDeltas "+this._name);
 
 		var allSubs = {}; // гуиды всех подписчиков
+		var ds = [];
 		for (var rg in this._roots) {
 			var root = this._roots[rg];
 			var d = root._genDelta();
+			if (!root.isMaster() && d ) {
+				ds.push(d);	// массив дельт для парента
+			}
 			var newSubs = root._getLog()._getNewSubscribersGuids();
 			if (newSubs.length>0) { 		// создаем сериализованное представление рута для отсылки новому подписчику
 				var d_add = root.serialize();
@@ -440,6 +599,7 @@ class MemDataBase {
 		// отправить дельты	
 
 		this._newSendDeltas(allSubs); 
+		return ds;
 	}
 
 	// разослать deltas, которые сгенерированны для db подписчикам
@@ -482,16 +642,29 @@ class MemDataBase {
 		return this._newSendDeltas(allSubs); 
 
 	}
-
+/*
 	_incPromise(curPromise) {
 		var cnum =  ++this._promiseCount;
 		this.promises[cnum] = curPromise;
 		return cnum;
 	}
-
+*/
 	// зарегистрировать новый рут в базе
 	_regRoot(root) {
 		this._roots[root.getGuid()] = root;
+	}
+	
+	printInfo() {
+		console.log("Db: ",this._name,"  guid: ",this._dbGuid, " tran ",this._curTran);
+		for (var g in this._roots) {
+			var s = "";
+			for (var i=0; i<10; i++) {
+				if (this._roots[g]._data[i]) 
+					s+=i.toString()+": "+this._roots[g]._data[i]+"   "
+			}
+			console.log("Root:",g,"  ",s);
+		}
+		//console.log("Roots: ",this._roots);
 	}
 
 

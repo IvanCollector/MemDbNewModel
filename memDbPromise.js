@@ -10,6 +10,7 @@ class DbPromise {
 		if (memDb instanceof MemDataBase) {
 			this._memDb = memDb;
 			// стартовать транзакцию (предполагаем, что НОВУЮ!)
+			/*
 			if (!this._noTran) {
 				this._memTran = this._memDb.start();
 				if (_dbgTr) console.log("START ",this._memDb._name," ", this._memTran.getTranCount()," ",this._memTran.getGuid());
@@ -17,6 +18,7 @@ class DbPromise {
 			}
 			else
 				this._memTran = this._memDb.curTran();
+			*/
 				
 		}
 
@@ -31,10 +33,12 @@ class DbPromise {
 					//console.log("RESOLVED ", res, "Promise ", that._num, "tech:", that._noTran);
 					if (that._resolve) 	
 						that._resolve(res,that._memTran); 
+						/*
 					if (!that._noTran) {
 						that._memDb.commit();
 						if (_dbgTr) console.log("COMMIT ",that._memDb._name," ",that._memTran.getTranCount()," ",that._memTran.getGuid());
 					}
+					*/
 					that._state = "resolved";
 				},0);
 		}
@@ -45,7 +49,7 @@ class DbPromise {
 				setTimeout(function() {
 					if (that._reject)
 						that._reject(res,that._memTran); 
-					that._memDb.commit(); // todo заменить на ролбэк?
+					//that._memDb.commit(); // todo заменить на ролбэк?
 					that._state = "rejected";
 				},0); 
 		}

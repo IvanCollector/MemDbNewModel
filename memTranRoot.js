@@ -1,70 +1,5 @@
 'use strict';
 
-/*
-class MemTransaction {
-	constructor(memDb){
-		this._tranCount = 0;
-		this._tranGuid = undefined;
-		this._state = "notStarted";
-		this._memDb = memDb;
-	}	
-
-	getGuid() {
-		return this._tranGuid;
-	}
-
-	state() {
-		return this._state;
-	}
-
-	getDb() {
-		return this._memDb;
-	}
-	
-	getTranCount() {
-		return this._tranCount;
-	}
-	
-	isExternal() {
-		return (this._external ? true : false);
-	}
-	
-	sourceGuid() {
-		return this._sourceGuid;
-	}
-
-	_start(extGuid,sourceGuid) {
-		if (this._state == "commited") {
-			throw new Error("нельзя запустить завершенную транзакцию");
-		}
-		if (this._tranCount==0) {
-			this._tranGuid = (extGuid ? extGuid : guid());
-			this._state = "started";
-			this._sourceGuid = sourceGuid;
-			if (extGuid) this._external = true;
-		}
-
-		this._tranCount++;
-		//console.log("COUNT "+this._tranCount);
-	}
-
-	_commit() {
-		if (this._state == "commited") {
-			throw new Error("нельзя завершить уже завершенную транзакцию, Database: "+this._memDb._name);
-		}
-
-		this._tranCount--;
-
-		if (this._tranCount==0) {
-			this._state = "commited";
-			this._tranGuid = undefined;
-		} 
-	}
-
-}
-
-*/
-
 class RootDb {
 	constructor(db, data, parentGuid, parentVersion, params) {
 		this._db = db;
@@ -230,7 +165,7 @@ class RootLog {
 	
 	_clear() {
 		this._log = [];
-		this._newsubs = [];
+		//this._newSubsGuids = [];
 	}
 	
 }

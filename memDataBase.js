@@ -1,6 +1,8 @@
 'use strict';
 
 var _dbgTr = false;
+var _dbgTrans = [];
+
 
 function guid() {
 
@@ -16,6 +18,11 @@ function guid() {
 class MemDbController {
 	constructor() {
 		this._databases = {};
+		this._rcqueue = [];
+		var that = this;
+		
+
+		//setTimeout(test1,10);
 	}
 	
 	_regMemDb(db) {
@@ -24,8 +31,51 @@ class MemDbController {
 	
 	getDb(guid) {
 		return this._databases[guid];
+	}	
+	
+	_tstQ() {
+		var that = this;
+		if (this._rcqueue.length>0) {
+			var qitem = this._rcqueue[0];
+			this._rcqueue.splice(0,1);
+			//console.log("EXE RCQUEUE ");
+			if (qitem.resolve)
+				qitem.fn().then(function(res) {
+					qitem.resolve(res);
+				});
+			else
+				qitem.fn();
+		}
+		if (this._rcqueue.length>0)
+			setTimeout(function() {  that._tstQ(); },0); //setTimeout(test1,0);
+		else this._flagStart = false;
 	}
 	
+	_crc(fn) {
+		var that = this;
+		
+		if (!this._flagStart) {
+			setTimeout(function() {  that._tstQ(); },0);
+			this._flagStart = true;
+		}
+	
+		this._rcqueue.push({ fn:fn });			
+	}
+	
+	_prc(fn) {
+		var that = this;
+
+		if (!this._flagStart) {
+			setTimeout(function() {  that._tstQ(); },0);
+			this._flagStart = true;
+		}
+				
+		return new Promise(function(resolve,reject) {
+			var qitem = { fn:fn, resolve:resolve, reject:reject };
+			that._rcqueue.push(qitem);			
+		});
+	}
+
 }
 
 
@@ -39,17 +89,13 @@ class MemDataBase {
 		this._version = 1;
 		this._roots = {};
 		// транзакции
-		this._curTran = undefined;
 		this._curTranGuid = undefined;
 		this._readOnlyMode = false;
 		this._calls = [];
-		// очередь
+		// очередь вызовов в транзакциях
 		this._queue = [];
 		
 		this._isLog = true;	// логировать изменения в бд
-
-		//this._promiseCount = 0;
-		//this.promises = {};
 
 		controller._regMemDb(this);
 
@@ -92,28 +138,23 @@ class MemDataBase {
 		return this._version;
 	}
 
-
-	
 	isReadOnly() {
 		return this._readOnlyMode;
 	}
 	
 	// Методы управления транзакцией
 
-	start() {
+	start(testTran) {
+		if (this._curTranGuid) 
+			throw new Error("can't start transaction because it's running")
+	
 		if (!this._curTranGuid) {
-			this._curTranGuid = guid();
+			if (testTran)
+				this._curTranGuid = testTran;
+			else
+				this._curTranGuid = guid();
 			//console.log("START ",this._name," :",this._curTranGuid);
 		}
-
-	/*
-		if (!this._curTran) {
-			this._curTran = new MemTransaction(this);
-			this._curTran._start();
-			console.log("START ",this._name," :",this._curTran.getGuid());
-		}	
-		return this._curTran;
-	*/
 	}
 
 	// стартовать внешнюю транзакцию с гуидом guid
@@ -127,34 +168,38 @@ class MemDataBase {
 			this._curTranGuid = extGuid;
 			this._curTranExt = true;
 			this._curTranSrc = sourceGuid;
-			//this._curTran._start(extGuid,sourceGuid);
 			
-			console.log("EXTSTART ",this._name," :",this._curTranGuid);
+			//console.log("EXTSTART ",this._name," :",this._curTranGuid);
 		}		
-	/*
-		if (this.inTran() && extGuid != this.tranGuid)
-			throw new Error("can't start external transaction")
-		this._readOnlyMode = false;
-		
-		if (!this._curTran) {
-			this._curTran = new MemTransaction(this);
-			this._curTran._start(extGuid,sourceGuid);
-			
-			console.log("EXTSTART ",this._name," :",this._curTran.getGuid());
-		}		
-		*/
+	}
+	
+	_clearTran() {
+		this._curTranGuid = undefined;
+		this._curTranExt = undefined;
+		this._curTranSrc = undefined;
 	}
 	
 	_getAllSubs() {
 		var allSubs = {};
 		for (var g in this._roots) 
-			for (var g2 in this._roots[g].__subscribers) 
+			for (var g2 in this._roots[g]._subscribers) 
 				allSubs[g2] = 1;
 		return allSubs;
 	}
 	
 	commit(res){
-		if (!this._curTranGuid) 
+	
+		function fcommit() {
+			var subs = that._getAllSubs();			
+
+			for (var g in subs) 
+				if (!(that._curTranExt && g == that._curTranSrc))
+					that._callChild(g,that._curTranGuid, undefined,1);
+
+			that._clearTran();
+		}
+	
+		if (!this._curTranGuid || this._readOnlyMode) 
 			throw new Error("нельзя завершить незапущенную транзакцию Database: "+this._name);	
 
 		var that = this;
@@ -164,74 +209,20 @@ class MemDataBase {
 				this._readOnlyMode = true;
 				return this._remoteClient(true,true).then( function (res1) {
 					that._readOnlyMode = false;				
-					that._curTranGuid = undefined;
-
-					var subs = that._getAllSubs();
-					for (var g in subs) that._callChild(g,undefined,1);
-					
+					fcommit();					
 					return res;
 				});
 			}
-		else {
-			that._curTranGuid = undefined; //console.log("COMMIT ",that._name," :",that._curTran.getGuid());
-			
-			var subs = that._getAllSubs();
-			for (var g in subs) that._callChild(g,undefined,1);
-			
+		else {		
+			fcommit();
 			return res;
 		}
-
-	}
-	
-	OLDcommit(res){
-		if (!this._curTran) 
-			throw new Error("нельзя завершить незапущенную транзакцию Database: "+this._name);	
-
-		var that = this;
-		var fromParent = this._curTran.isExternal() && (this._curTran.sourceGuid() === this.getParentGuid());
-
-		if (this.getParentGuid() && !fromParent) {	// коммит требует предварительного коммита парента
-				this._readOnlyMode = true;
-				return this._remoteClient(true,true).then( function (res1) {
-					that._readOnlyMode = false;
-					
-					that._curTran._commit(); //console.log("COMMIT ",that._name," :",that._curTran.getGuid());
-					if (that._curTran.state() == "commited") {
-						that._curTran = undefined;
-					}	
-
-					var subs = that._getAllSubs();
-					for (var g in subs) that._callChild(g,undefined,1);
-					
-					return res;
-				});
-			}
-		else {
-			this._curTran._commit(); //console.log("COMMIT ",that._name," :",that._curTran.getGuid());
-			if (this._curTran.state() == "commited") {	
-				this._curTran = undefined;		
-			}
-			
-			var subs = that._getAllSubs();
-			for (var g in subs) that._callChild(g,undefined,1);
-			
-			return res;
-		}
-
-	}
-	
-	OLDcurTran(){
-		return this._curTran;
 	}
 
 	inTran() {
 		return (this._curTranGuid!=undefined);
 	}
 
-	get tranGuid() {
-		return this._curTranGuid;
-	}
-	
 	getTranGuid() {
 		return this._curTranGuid;
 	}
@@ -239,15 +230,26 @@ class MemDataBase {
 	isLogActive() {
 		return this._isLog;
 	}
-	
+	//packet.deltas.length==0 && packet.calls.length==0 && !packet.commit
 	// очередь
 	// fn - возвращает промис
 	_toQueue(fn, tran) {
 		var that = this;
 		function resolveNext() {
 			// поставить следующий из очереди ГДЕ КОММИТИТСЯ ТРАНЗАКЦИЯ?
-			if (that.getTranGuid()) // если транзакция еще открыта, то не ищем в очереди
+			if (that.getTranGuid()) { // если транзакция еще открыта, то не ищем в очереди
+				for (var i=0; i<that._queue.length; i++) {
+					if (that.getTranGuid() == that._queue[i].tran) {
+						var qelem2 = that._queue[i];
+						that._queue.splice(i,1); // удаляем отработанный элемент очереди
+						return qelem2.fn().then(function(res2) {
+							qelem2.fresolve(res2);
+						});						
+					}
+				}
 				return;
+			}
+				
 			if (that._queue.length>0) {
 				var qelem2 = that._queue[0];
 				that._queue.splice(0,1); // удаляем отработанный элемент очереди
@@ -257,29 +259,39 @@ class MemDataBase {
 			}
 		}		
 		return new Promise(function(resolve,reject) {
-			if (that.getTranGuid() && (that.getTranGuid() !== tran))  // если в другой транзакции, то ставим в очередь
+			if (that.getTranGuid() && (that.getTranGuid() !== tran)) { // если в другой транзакции, то ставим в очередь
 				that._queue.push({ fn: fn, tran: tran, fresolve: function(res) { resolve(res); resolveNext(); }  });
-			else // если в этой или без транзакции, то выполняем
-				fn().then(function(res) { resolve(res); resolveNext(); });
+				//console.log("%c # PUSH TO QUEUE ","color:blue",that._name,"  ", that._curTranGuid /*, " ", fn*/);
+			}
+			else {// если в этой или без транзакции, то выполняем
+				//console.log("%c # EXEC IN QUEUE ","color:blue",that._name,"  ", that._curTranGuid /*, " ", fn*/);
+				fn().then(function(res) { 
+					var x = that._name;
+					resolve(res); 
+					resolveNext(); });
+			}
 		});
 	}
 	
 	_remoteClientPromise(packet) {
 		var that = this;
 		this._readOnlyMode = true; // в режим ридонли пока от парента не вернется ответ
-		return new Promise(function(resolve,reject) {		
-			setTimeout( function() {
+			
+		return that.getController()._prc(function() {
+			return new Promise(function(resolve,reject) {	
 				var parent = that.getController().getDb(that.getParentGuid());
 				var p = parent._remoteParent(packet);
 				p.then( function(res) {
 					that._readOnlyMode = false; // выйти из ридонли пока обработка колбэков
-					if (packet.calls.length>0) // todo переделать на N элементов
-						return that._exec({calls: [ { fn: function() { packet.calls[0].resolve(res.results[0]); }  }] },true);
-						//packet.calls[0].resolve(res.results[0]); // todo рекурсия асинхронная	
+					if (packet.calls.length>0) { // todo переделать на N элементов
+						var arg = { calls: [ { fn: function() { packet.calls[0].resolve(res.results[0]); }  }] }
+						arg.tran = packet.tran;
+						return that._exec(arg,"remoteClientPromise");
+					}
 				}).then(function(res) {
 					resolve(res);
 				});	
-			},0);			
+			});
 		}); 
 	}
 	
@@ -318,11 +330,11 @@ class MemDataBase {
 		this._calls = [];		
 
 		return this._remoteClientPromise(packet);
-	}
-	
+	}	
 	
 	_execChild(packet) {
 		var that = this;
+		//console.log("%c ## EXEC REMOTE CHILD ","color:blue",that._name," ",packet.tran," COMMIT: ",packet.commit,packet);
 		return this._toQueue(function() {
 			return new Promise (function(resolve,reject) {
 				//setTimeout(function() {
@@ -334,8 +346,9 @@ class MemDataBase {
 	}
 	
 	_execChild2(packet) {
+
+		//console.log("%c @@ __EXEC ","color:black",this._name,"EXECCHILD"," ",packet.tran," COMMIT: ",packet.commit,packet);
 		this._startExternal(packet.tran, packet.db);
-		// todo очередь сделать	
 		
 		var deltas = packet.deltas ? packet.deltas : [];
 		this._applyDeltas(deltas);							// применить дельты на данной БД
@@ -343,75 +356,77 @@ class MemDataBase {
 		this._propDeltas("subs", deltas, packet.db);	// разослать дельты подписчикам
 		
 		if (packet.commit)
-			this.commit(res);		
+			this.commit();		
 	}
 	
-	_callChild(dbGuid, deltas, commit) {	
-
+	_callChild(dbGuid, tran, deltas, commit) {	
+	
+		if (!tran) //this.getTranGuid())
+			throw new Error("can't call child: database is not in transaction ");
+			
 		var packet = { 
 			db : this.getGuid(),
-			tran : this.getTranGuid(),	
+			tran : tran, //this.getTranGuid(),	
 			async : 1,						// вызов асинхронный или синхронный
 			commit : commit ? 1 : 0,		// коммитить транзакцию или нет
 			deltas : deltas,				// массив дельт
 			calls : []						// массив удаленных вызовов
-		};
+		};		
+		var db = this.getController()._databases[dbGuid];	
 		
-		var db = this.getController()._databases[dbGuid];
-		db._execChild(packet);		
+		this.getController()._crc(function() {
+			db._execChild(packet);	
+		});			
 	}
 	
 	_remoteParent(packet) {
 		var that = this;
+		//console.log("%c ## EXEC REMOTE PARENT ","color:red",that._name," ",packet.tran," COMMIT: ",packet.commit,packet);
+
 		return this._toQueue(function() {
-			return that._remoteParent2.apply(that, [packet]);
+			that._startExternal(packet.tran, packet.db);
+		
+			return that._exec(packet,"remoteParent")
+			.then(function(res) {
+				if (packet.commit)
+					return that.commit(res);
+				else return res;
+			})
+			.then(function(res) {
+				return new Promise( function(resolve,reject) {
+					//setTimeout( function() {				
+					//	resolve(res);
+					that.getController()._crc(function() { resolve(res); });
+					//},0);
+				});		
+			});
 		}, packet.tran);
 	}
-	
-	_remoteParent2(packet) {
-		var that = this;
-		this._startExternal(packet.tran, packet.db);
-		// todo очередь сделать
-		
-		return this._exec(packet)
-		.then(function(res) {
-			if (packet.commit)
-				return that.commit(res);
-			else return res;
-		})
-		.then(function(res) {
-			return new Promise( function(resolve,reject) {
-				setTimeout( function() {
-					//if (packet.commit)
-					//	that.commit();					
-					resolve(res);
-				},0);
-			});
-			
-		});
-	}
 
-	run(userFunc) {
+	run(userFunc,testTran) {
 		var that = this;
 		
 		return this._toQueue(function() {
-			return that._run2.apply(that, [userFunc]);
+			//var xxx = that._curTranGuid;
+			var s = testTran;
+			that.start(testTran);
+			//console.log("START!",that._name, that._curTranGuid, that._queue.length, xxx);
+			var p =  that._exec( {calls: [{ fn: userFunc }], tran: that.getTranGuid() }, "run")
+			.then(function(res) { 
+				var s1=s;
+				return that.commit(); 
+			});		
+			return p;	
 		}, undefined);
 	}
-	
-	_run2(userFunc) {
-		var that = this;		
-		this.start();
-		var p =  this._exec( {calls: [{ fn: userFunc }] })
-		.then(function(res) { 
-			console.log(" RESOLVE RUN ",that._name, userFunc);
-			return that.commit(); 
-		});		
-		return p;	
-	}	
-	
-	_exec(packet) {
+
+	_exec(packet,dbgInfo) {
 		var that = this, funcresult = null;
+		
+		if (packet.tran != this.getTranGuid())
+			throw new Error("can't execute packet: wrond transaction db:",this.getTranGuid(),"packet ",packet.tran,packet );
+		
+		console.log("%c @@ __EXEC ","color:black",that._name,dbgInfo," ",packet.tran," COMMIT: ",packet.commit,packet);
 
 		var deltas = packet.deltas ? packet.deltas : [];
 		if (deltas.length>0) {
@@ -437,13 +452,16 @@ class MemDataBase {
 				});
 			}
 			else		// server
-				p = new Promise(function(resolve,reject) {
+				p = that._genericExec(rc.name,rc.arg);
+				/*
+				p = new Promise(function(resolve,reject) {	
 					resolve( { results: [that[rc.name](rc.arg)] }); // должен быть асинхронным ?	
-				});
+				});*/
 
 			return p.then( function(res) {
+				var sss = packet; // ###
 				var ds = that._genSendDeltas();					// сгенерировать и разослать дельты после выполнения методов
-				if (that.getParentGuid()) 
+				if (that.getParentGuid() && (ds.length>0 || that._calls.length>0) ) //### && (ds.length>0 || that._calls>0)
 					return that._remoteClient(true,false,ds).then(function(res1) {
 						return res; // todo усовершенствовать для случая каскадных изменений
 					});
@@ -460,13 +478,34 @@ class MemDataBase {
 
 	}
 
+	_genericRemoteCall(name, argObj) {
+		if (!this.inTran()) 
+			throw new Error("can't call "+name+": database isn't in transaction");	
+		if (this.isReadOnly()) 
+			throw new Error("can't call "+name+": database is in readonly mode");
 
-	_memRemote(obj) {
-		if (!this.inTran())		// стартовать транзакцию при буферизации удаленного вызова
-			this.start();
-		this._calls.push(obj);
-	}
+		var that = this;
+		return new Promise(function(resolve, reject) {
+				var o = { name: name, arg: argObj, resolve: function(res) { resolve(res); }}
+				that._calls.push(o);
+		});	
+	}	
 	
+	_genericExec(name, argObj) {
+		if (!this.inTran()) throw new Error("can't execute "+name+": database is not in transaction");	
+		if (this.isReadOnly()) throw new Error("can't execute "+name+": database is in readonly mode");
+		var that = this;
+		return new Promise(function(resolve,reject) {
+			resolve();
+		})
+		.then(function(res) {
+			return that[name](argObj);
+		})
+		.then(function(res) {
+			return { results: [res] };
+		});
+		
+	}
 
 	// подписать на руты родительской базы. Руты приходят в виде дельт
 	// и применяются к базе до того, как отрабатывает обработчик промис
@@ -474,30 +513,18 @@ class MemDataBase {
 	// возвращает промис с массивом ссылок на руты (объекты)
 
 	subscribeRoots(rootGuids) {
-
-		if (!this.inTran()) 
-			throw new Error("can't exec subscribeRoots: database isn't in transaction");	
-		if (this.isReadOnly()) 
-			throw new Error("can't exec subscribeRoots: database is in readonly mode");
-
 		var that = this;
-		return new Promise(function(resolve, reject) {
-				var a = { subDbGuid: that.getGuid(), rootGuids: rootGuids }
-				var o = { name: "_subscribeRootsParentSide", arg: a, resolve: function(res) {
-					var resRoots = [];
-					for (var i=0; i<res.length; i++) {
-						resRoots.push(that.getRoot(res[i]));
-					}
-					resolve(resRoots);					
-				}}
-				that._memRemote(o);
+		var p = this._genericRemoteCall("_subscribeRootsParentSide",  { subDbGuid: this.getGuid(), rootGuids: rootGuids });
+		return p.then(function(res) {
+			var resRoots = [];
+			for (var i=0; i<res.length; i++) {
+				resRoots.push(that.getRoot(res[i]));
+			}			
+			return resRoots;
 		});
 	}
-
-
+	
 	_subscribeRootsParentSide(objsub) {
-		if (!this.inTran()) throw new Error("can't subscribe on parent: database is not in transaction");	
-		if (this.isReadOnly()) throw new Error("can't subscribe on parent: database is in readonly mode");
 
 		var subDbGuid = objsub.subDbGuid, rootGuids = objsub.rootGuids;
 		var res = [];
@@ -507,6 +534,20 @@ class MemDataBase {
 			root._subscribe(subDbGuid);
 		}
 		return rootGuids;		
+	}
+
+	testSetParElem(rootGuid,idx,value) {
+		var that = this;
+		var p = this._genericRemoteCall("_testSetParElemParentSide",  { rootGuid: rootGuid.getGuid(), idx:idx, value:value });
+		return p.then(function(res) {
+			return that.getRoot(res);
+		});
+	}
+
+	_testSetParElemParentSide(obj) {
+		var root = this.getRoot(obj.rootGuid);
+		root.setData(obj.idx,obj.value,this.getTranGuid());		
+		return obj.rootGuid;		
 	}
 	
 	// применить дельты к бд,
@@ -535,35 +576,16 @@ class MemDataBase {
 		this._isLog = true;
 	}
 
-
-	// послать deltas, которые сгенерированны для db подписчикам
-	_sendDeltas(data) {
-		var that = this;
-		
-		return new Promise(function(resolve, reject, tran) {
-				// эмулируем удаленный вызов
-				setTimeout( function() { 
-					for (var dbGuid in data) {
-						var db = that.getController()._databases[dbGuid];
-						db._applyDeltas(data[dbGuid]);
-					}
-					resolve("foo"); }, 0);	
-			});	
-	}
-
 	// послать deltas, которые сгенерированны для db подписчикам
 	_newSendDeltas(data) {
 		var that = this;
+		//console.log("newsenddelta ",this._curTranGuid);
+		var memTran = this._curTranGuid;
 		
-		setTimeout( function() { 
-			for (var dbGuid in data) {
-			/*
-				var db = that.getController()._databases[dbGuid];
-				db._applyDeltas(data[dbGuid]);
-			*/
-				that._callChild(dbGuid,data[dbGuid],0);
-			}
-		}, 0);	
+		//setTimeout( function() { 
+			for (var dbGuid in data)
+				that._callChild(dbGuid,memTran,data[dbGuid],0);
+		//}, 0);	
 
 	}
 	
@@ -580,6 +602,7 @@ class MemDataBase {
 				ds.push(d);	// массив дельт для парента
 			}
 			var newSubs = root._getLog()._getNewSubscribersGuids();
+			root._getLog()._newSubsGuids = [];
 			if (newSubs.length>0) { 		// создаем сериализованное представление рута для отсылки новому подписчику
 				var d_add = root.serialize();
 				d_add.add = 1;
@@ -642,20 +665,14 @@ class MemDataBase {
 		return this._newSendDeltas(allSubs); 
 
 	}
-/*
-	_incPromise(curPromise) {
-		var cnum =  ++this._promiseCount;
-		this.promises[cnum] = curPromise;
-		return cnum;
-	}
-*/
+
 	// зарегистрировать новый рут в базе
 	_regRoot(root) {
 		this._roots[root.getGuid()] = root;
 	}
 	
 	printInfo() {
-		console.log("Db: ",this._name,"  guid: ",this._dbGuid, " tran ",this._curTran);
+		console.log("Db: ",this._name,"  guid: ",this._dbGuid, " tran ",this._curTranGuid);
 		for (var g in this._roots) {
 			var s = "";
 			for (var i=0; i<10; i++) {

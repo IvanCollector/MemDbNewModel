@@ -1,7 +1,134 @@
 'use strict';
 
 var gr1,gr2;
-var pdbg;
+var pdbg, cl;
+var n_levels = 3, n_childs = 2;
+var r1;
+			
+function p() {
+for (var levels = 0; levels<n_levels; levels++) {
+		for (var i=0; i<Math.pow(n_childs,levels); i++) {
+			var db = cl[levels][i];
+			var cr = db.getRoot(r1.getGuid());
+			var x = "";
+			if (cr) {
+				for (var k=0; k<5; k++) 
+					x = x+","+ (cr.getData(k) ? cr.getData(k) : " ");
+			}
+			console.log(levels,":",i,":",x," : ",db._queue.length," : ",db._curTranGuid);
+		}
+	}
+}
+
+function setItem(db,idx,val) {
+	db.run(function() {
+		for (var gr in db._roots) {
+			db._roots[gr].setData(idx,val,db.getTranGuid());
+		}
+	}).then(function() { console.log("Done"); });
+}
+
+function setPar(db,idx,val) {
+	db.run(function() {
+		for (var gr in db._roots) {
+			var root = db.getRoot(gr);
+			if (!root.isMaster())
+				db.testSetParElem(db.getRoot(gr),idx,val);
+		}
+	}).then(function() { console.log("Done setParent"); });
+}
+
+
+
+function genTest() {
+	
+	var clevels = [];
+	cl=clevels;
+	controller = new MemDbController();	
+	// создаем дерево баз данных
+	for (var levels = 0; levels<n_levels; levels++) {
+
+		if (levels == 0) {
+			clevels[0] = [];
+			var master = new MemDataBase(controller,undefined,{ name: "MasterBase"});
+			clevels[0].push(master); 
+
+			master.run(function() {
+				r1 = master.addMasterRoot({1: 1, 2: 2, 3:3 }, { name: "MasterBase_Root1"} );
+			});
+		}
+		else {
+			clevels[levels] = [];
+			for (var i=0, j=0, k=0; i<n_childs*clevels[levels-1].length; i++) {
+				var curParent = clevels[levels-1][k];
+				clevels[levels].push( new MemDataBase(controller,curParent.getGuid(),{ name: "Level "+levels+"_"+i})); 
+				j++;
+				if (j==n_childs) {
+				 j=0;
+				 k++;
+				}
+			}
+		}
+	}
+
+	for (levels = 1; levels<n_levels; levels++) {
+		(function() {
+			var memlevels = levels;
+			setTimeout(function() {
+				for (i=0; i<clevels[memlevels].length; i++) {
+					var cbase  = clevels[memlevels][i];		
+					(function() {
+						//console.log("PARENT : ", cbase._name, i, ":",memlevels,i-(n_childs*memlevels-1));
+						var memi=i;
+						//var memlevels=levels;
+						var membase = cbase;
+						cbase.run(function() {
+							membase.subscribeRoots([r1.getGuid()]).then(function(res) {
+								//console.log("Resolve subscribe ",membase._name, memi, ":",memlevels," : ", res);		
+							});			
+						}).then(function() {
+						
+							if ((memlevels != n_levels-1) || (memi!=0))
+								return;
+						
+							var dbx = clevels[n_levels-1][0];
+							console.log("DBDBDB" , dbx);
+
+							dbx.run(function() {
+								//p();
+								var rx = dbx.getRoot(r1.getGuid());
+								console.log(rx.getData(1)," ",rx.getData(2)," ",rx.getData(3)," ",rx.getData(4));
+								rx.setData(4,170,dbx.getTranGuid());
+							},"MODIFTRAN").then(function() { 
+								console.log("RUN END");
+							});	
+							
+						});
+					})();
+				}
+			},500*levels);
+		})();
+	}
+	
+	/*
+	setTimeout(function() {
+		var dbx = clevels[n_levels-1][0];
+		console.log("DBDBDB" , dbx);
+
+		dbx.run(function() {
+			p();
+			var rx = dbx.getRoot(r1.getGuid());
+			console.log(rx.getData(1)," ",rx.getData(2)," ",rx.getData(3)," ",rx.getData(4));
+			rx.setData(4,170,dbx.getTranGuid());
+		},"MODIFTRAN").then(function() { 
+			console.log("RUN END");
+		});
+	},1500);
+	
+	*/
+	
+
+}
 
 
 function test6() {
@@ -34,6 +161,7 @@ function test6() {
 			});
 		});
 		
+		/*
 	chld2.run(function() {
 		r3 = chld2.addMasterRoot({ 2: 11, 3: 31, 4: 51} , {name: "Level2_Db2_Root1"} ); 
 		
@@ -46,7 +174,8 @@ function test6() {
 		});
 		
 	} );
-	
+	*/
+	/*	
 	chld2_2.run(function() {						
 		chld2_2.subscribeRoots([r1.getGuid()]).then(function(res) {
 			master.printInfo();
@@ -59,7 +188,7 @@ function test6() {
 			r3_c.setData(3,99999,chld2_2.getTranGuid());
 		});
 	} );
-	
+
 	chld2_2.run(function() {						
 		chld2_2.subscribeRoots([r2.getGuid()]).then(function(res) {
 			console.log("********************************* Resolve subscribe 2_2 2",res);
@@ -73,7 +202,7 @@ function test6() {
 			chld2.printInfo();
 			chld2_2.printInfo();	
 	});	
-	
+	*/
 }
 
 function test5() {
@@ -157,7 +286,8 @@ var master;
 var chld1;
 var chld2,chld2_2;
 
-test6();
+//test6();
+genTest();
 
 /*
 setTimeout( function() {

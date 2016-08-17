@@ -1,6 +1,8 @@
 'use strict';
 
-var _dbgTranLog = true; // трассировка в консоль старта/коммита транзакций
+var _dbgTr = false;
+var _dbgTrans = [];
+
 
 function guid() {
 
@@ -18,9 +20,6 @@ class MemDbController {
 		this._databases = {};
 		this._rcqueue = [];
 		var that = this;
-		
-
-		//setTimeout(test1,10);
 	}
 	
 	_regMemDb(db) {
@@ -48,7 +47,7 @@ class MemDbController {
 				qitem.fn();
 		}
 		if (this._rcqueue.length>0)
-			setTimeout(function() {  that._tstQ(); },0); //setTimeout(test1,0);
+			setTimeout(function() {  that._tstQ(); },0);
 		else this._flagStart = false;
 	}
 	
@@ -63,7 +62,7 @@ class MemDbController {
 		this._rcqueue.push({ fn:fn });			
 	}
 	
-	_prc(fn) {
+	_prc(db,fn) {
 		var that = this;
 
 		if (!this._flagStart) {
@@ -71,7 +70,7 @@ class MemDbController {
 			this._flagStart = true;
 		}
 				
-		return new Promise(function(resolve,reject) {
+		return new DbPromise(db, function(resolve,reject) {
 			var qitem = { fn:fn, resolve:resolve, reject:reject };
 			that._rcqueue.push(qitem);			
 		});
@@ -103,15 +102,13 @@ class MemDataBase {
 
 		if (params)
 			this._name = params.name;
-		
-		// DbPromises
-		this._nprom=0; 		// счетчик промисов
+			
+		this._nprom=0;
 		this._p = [];
 	}
 	
-
 	_incPromise(p){
-		//this._p.push(p);
+		this._p.push(p);
 		return ++this._nprom;
 	}
 
@@ -177,7 +174,8 @@ class MemDataBase {
 				this._curTranGuid = testTran;
 			else
 				this._curTranGuid = guid();
-			if (_dbgTranLog)  console.log("TRANLOG START ",this._name," :",this._curTranGuid);
+			this._nportion = 0;
+			//console.log("START ",this._name," :",this._curTranGuid);
 		}
 	}
 
@@ -192,8 +190,9 @@ class MemDataBase {
 			this._curTranGuid = extGuid;
 			this._curTranExt = true;
 			this._curTranSrc = sourceGuid;
+			this._nportion = 0;
 			
-			if (_dbgTranLog) console.log("TRANLOG EXTSTART ",this._name," :",this._curTranGuid);
+			//console.log("EXTSTART ",this._name," :",this._curTranGuid);
 		}		
 	}
 	
@@ -220,9 +219,12 @@ class MemDataBase {
 			for (var g in subs) 
 				if (!(that._curTranExt && g == that._curTranSrc))
 					that._callChild(g,that._curTranGuid, undefined,1);
-			if (_dbgTranLog) console.log("TRANLOG COMMIT ",that._name," :",that._curTranGuid);
+
 			that._clearTran();
 			that._setReadOnly(true);
+			
+			//that._finalResolve();
+			//that._finalResolve = undefined;
 		}
 	
 		if (!this._curTranGuid || this._readOnlyMode) 
@@ -266,6 +268,7 @@ class MemDataBase {
 					if (that.getTranGuid() == that._queue[i].tran) {
 						var qelem2 = that._queue[i];
 						that._queue.splice(i,1); // удаляем отработанный элемент очереди
+						//that._finalResolve = qelem2.fresolve;
 						return qelem2.fn().then(function(res2) {
 							qelem2.fresolve(res2);
 						});						
@@ -282,19 +285,20 @@ class MemDataBase {
 				});
 			}
 		}		
-		return new Promise(function(resolve,reject) {
+		return new DbPromise(this, function(resolve,reject) {
 			if (that.getTranGuid() && (that.getTranGuid() !== tran)) { // если в другой транзакции, то ставим в очередь
 				that._queue.push({ fn: fn, tran: tran, fresolve: function(res) { resolve(res); resolveNext(); }  });
 				//console.log("%c # PUSH TO QUEUE ","color:blue",that._name,"  ", that._curTranGuid /*, " ", fn*/);
 			}
 			else {// если в этой или без транзакции, то выполняем
 				//console.log("%c # EXEC IN QUEUE ","color:blue",that._name,"  ", that._curTranGuid /*, " ", fn*/);
+				//that._finalResolve = resolve;
 				fn().then(function(res) { 
 					var x = that._name;
 					resolve(res); 
-					resolveNext(); });
+					resolveNext(); }, undefined, true);
 			}
-		});
+		},true);
 	}
 	
 	_remoteClientPromise(packet) {
@@ -302,14 +306,15 @@ class MemDataBase {
 		if (packet.calls.length>0)
 			this._setReadOnly(true);  // в режим ридонли пока от парента не вернется ответ (если CALL)
 			
-		return that.getController()._prc(function() {
-			return new Promise(function(resolve,reject) {	
+		return that.getController()._prc(this, function() {
+			return new DbPromise(that,function(resolve,reject) {	
 				var parent = that.getController().getDb(that.getParentGuid());
 				var p = parent._remoteParent(packet);
 				p.then( function(res) {
 					if (that.isReadOnly())that._setReadOnly(false); // выйти из ридонли пока обработка колбэков
 					if (packet.calls.length>0) { // todo переделать на N элементов
-						var arg = { calls: [ { fn: function() { return packet.calls[0].resolve(res.results[0]); }  }] }
+						var arg = { calls: [ { fn: function() { 
+							packet.calls[0].resolve(res.results[0]); }  }] }
 						arg.tran = packet.tran;
 						return that._exec(arg,"remoteClientPromise");
 					}
@@ -361,7 +366,7 @@ class MemDataBase {
 		var that = this;
 		//console.log("%c ## EXEC REMOTE CHILD ","color:blue",that._name," ",packet.tran," COMMIT: ",packet.commit,packet);
 		return this._toQueue(function() {
-			return new Promise (function(resolve,reject) {
+			return new DbPromise (that, function(resolve,reject) {
 				//setTimeout(function() {
 					that._execChild2.apply(that, [packet]);
 					resolve();
@@ -418,11 +423,8 @@ class MemDataBase {
 				else return res;
 			})
 			.then(function(res) {
-				return new Promise( function(resolve,reject) {
-					//setTimeout( function() {				
-					//	resolve(res);
+				return new DbPromise( that,function(resolve,reject) {
 					that.getController()._crc(function() { resolve(res); });
-					//},0);
 				});		
 			});
 		}, packet.tran);
@@ -436,25 +438,39 @@ class MemDataBase {
 			//console.log("START!",that._name, that._curTranGuid, that._queue.length, xxx);
 			var p =  that._exec( {calls: [{ fn: userFunc }], tran: that.getTranGuid() }, "run")
 			.then(function(res) { 
-				return that.commit(); 
-			});		
+				 that.commit();  //СДЕЛАТЬ ЧТОБ РЕЗОЛВИЛОСЬ ТОЛЬКО ПОСЛЕ КОММИТА
+			});
 			return p;	
 		}, undefined);
 	}
-
+	
 	_onResolvePromise(val,result,num,tran) {
 	
 		var that=this;
-		/*
 		if (this._name!="MasterBase")
 			console.log("!!! ONRESOLVE : ",this._name, this._curTranGuid,val);
-			*/
-		if (val==0) 
+		if (val==0) { 
 			that._fresolveAndGo(result);
-			//setTimeout(function() { that._fresolveAndGo(result); },0);
+			/*
+			//setTimeout(function() {
+				var ds = that._genSendDeltas();	
+				if (ds.length==0 && that._calls.length==0 && !that._curTranExt) {
+					if (that._curTranGuid)
+						that.commit();
+					else 
+						console.log("EMPTY TRAN INSIDE ",num,"  ",tran,"  ",that._name);
+					return;
+				}
+				if (that.getParentGuid() && (ds.length>0 || that._calls.length>0))
+					that._remoteClient(true,false,ds);
+			//},0);
+			*/
+		}
+			
+			
+		
 	}
-			
-			
+
 	_exec(packet,dbgInfo) {
 		var that = this, funcresult = null;
 		if (packet.deltas && packet.deltas.length>0 && packet.commit)
@@ -463,7 +479,7 @@ class MemDataBase {
 			throw new Error("can't execute packet: wrong transaction db:",this.getTranGuid(),"packet ",packet.tran,packet );
 		
 		console.log("%c @@ __EXEC ","color:black",that._name,dbgInfo," ",packet.tran," COMMIT: ",packet.commit,packet);
-
+	
 		var deltas = packet.deltas ? packet.deltas : [];
 		if (deltas.length>0) {
 			for (var i=0, dnew = []; i<deltas.length; i++) {
@@ -482,21 +498,28 @@ class MemDataBase {
 		var rc = packet.calls[0], p;
 		if (rc) {
 			if (rc.fn) {	// client	
-
 				p = new DbPromise(this, function(resolve,reject) {
+					var x = that;
 					resolve();
 				}).then(function() {
+					var x = that;
 					that._nportion++;
 					return rc.fn();
-				});
+				});	
 			}
 			else		// server
 				p = that._genericExec(rc.name,rc.arg);
-	
-			var p2 = new Promise(function(resolve,reject) {
+			
+			//return p;
+			
+			var p2 = p.then(function(res) {
+				return new DbPromise(that,function(resolve,reject) {
 					that._fresolveAndGo = resolve;
-				});
-						
+				},true);
+			});
+			
+			
+
 			return p2.then( function(res) {
 				var ds = that._genSendDeltas();					// сгенерировать и разослать дельты после выполнения методов
 				if (that.getParentGuid() && (ds.length>0 || that._calls.length>0) )
@@ -509,10 +532,11 @@ class MemDataBase {
 					return res;
 				}
 			});	
+			
 
 		}
 		else
-			return new Promise(function(resolve,reject) { resolve(); });
+			return new DbPromise(this, function(resolve,reject) { resolve(); });
 
 	}
 
@@ -523,7 +547,7 @@ class MemDataBase {
 			throw new Error("can't call "+name+": database is in readonly mode");
 
 		var that = this;
-		return new Promise(function(resolve, reject) {
+		return new DbPromise(this, function(resolve, reject) {
 				var o = { name: name, arg: argObj, resolve: function(res) { resolve(res); }}
 				that._calls.push(o);
 		});	
@@ -533,15 +557,15 @@ class MemDataBase {
 		if (!this.inTran()) throw new Error("can't execute "+name+": database is not in transaction");	
 		if (this.isReadOnly()) throw new Error("can't execute "+name+": database is in readonly mode");
 		var that = this;
-		return new DbPromise(this,function(resolve,reject) {
+		return new DbPromise(this, function(resolve,reject) {
 			resolve();
-		})
+		},true)
 		.then(function(res) {
 			return that[name](argObj);
 		})
 		.then(function(res) {
 			return { results: [res] };
-		});
+		},true);
 		
 	}
 

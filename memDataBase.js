@@ -2,84 +2,6 @@
 
 var _dbgTranLog = true; // трассировка в консоль старта/коммита транзакций
 
-function guid() {
-
-    function s4() {
-        return Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
-    };
-
-    return s4() + s4() +'-'+ s4()  +'-'+ s4() +'-'+
-        s4() +'-'+ s4() + s4() + s4();
-}
-
-// todo контроллеры также надо упорядочить в дерево
-class MemDbController {
-	constructor() {
-		this._databases = {};
-		this._rcqueue = [];
-		var that = this;
-		
-
-		//setTimeout(test1,10);
-	}
-	
-	_regMemDb(db) {
-		this._databases[db.getGuid()] = db;
-	}
-	
-	getDbGuids() {
-		return Object.keys(this._databases);
-	}
-	
-	getDb(guid) {
-		return this._databases[guid];
-	}	
-	
-	_tstQ() {
-		var that = this;
-		if (this._rcqueue.length>0) {
-			var qitem = this._rcqueue[0];
-			this._rcqueue.splice(0,1);
-			if (qitem.resolve)
-				qitem.fn().then(function(res) {
-					qitem.resolve(res);
-				});
-			else
-				qitem.fn();
-		}
-		if (this._rcqueue.length>0)
-			setTimeout(function() {  that._tstQ(); },0); //setTimeout(test1,0);
-		else this._flagStart = false;
-	}
-	
-	_crc(fn) {
-		var that = this;
-		
-		if (!this._flagStart) {
-			setTimeout(function() {  that._tstQ(); },0);
-			this._flagStart = true;
-		}
-	
-		this._rcqueue.push({ fn:fn });			
-	}
-	
-	_prc(fn) {
-		var that = this;
-
-		if (!this._flagStart) {
-			setTimeout(function() {  that._tstQ(); },0);
-			this._flagStart = true;
-		}
-				
-		return new Promise(function(resolve,reject) {
-			var qitem = { fn:fn, resolve:resolve, reject:reject };
-			that._rcqueue.push(qitem);			
-		});
-	}
-
-}
-
-
 class MemDataBase {
 
 	constructor(controller, parentDbGuid, params) {
@@ -95,23 +17,22 @@ class MemDataBase {
 		this._calls = [];
 		this._nportion = 0;
 		// очередь вызовов в транзакциях
-		this._queue = [];
-		
+		this._queue = [];		
 		this._isLog = true;	// логировать изменения в бд
 
-		controller._regMemDb(this);
+		controller._regMemDb(this);	
 
-		if (params)
-			this._name = params.name;
+		if (params) this._name = params.name;
 		
 		// DbPromises
 		this._nprom=0; 		// счетчик промисов
 		this._p = [];
+		this._dbgPromises = [];
 	}
 	
 
 	_incPromise(p){
-		//this._p.push(p);
+		// this._p.push(p);
 		return ++this._nprom;
 	}
 
@@ -197,7 +118,8 @@ class MemDataBase {
 		}		
 	}
 	
-	_clearTran() {
+	_clearTran() {	
+		delete this._promises[this._curTranGuid];
 		this._curTranGuid = undefined;
 		this._curTranExt = undefined;
 		this._curTranSrc = undefined;
@@ -254,7 +176,7 @@ class MemDataBase {
 	isLogActive() {
 		return this._isLog;
 	}
-	//packet.deltas.length==0 && packet.calls.length==0 && !packet.commit
+
 	// очередь
 	// fn - возвращает промис
 	_toQueue(fn, tran) {
@@ -304,8 +226,10 @@ class MemDataBase {
 			
 		return that.getController()._prc(function() {
 			return new Promise(function(resolve,reject) {	
-				var parent = that.getController().getDb(that.getParentGuid());
-				var p = parent._remoteParent(packet);
+				//var parent = that.getController().getDb(that.getParentGuid());
+				//var p = parent._remoteParent(packet);
+				var p = that.getController()._remoteParent(that.getParentGuid(),packet);
+				
 				p.then( function(res) {
 					if (that.isReadOnly())that._setReadOnly(false); // выйти из ридонли пока обработка колбэков
 					if (packet.calls.length>0) { // todo переделать на N элементов
@@ -386,21 +310,22 @@ class MemDataBase {
 	
 	_callChild(dbGuid, tran, deltas, commit) {	
 	
-		if (!tran) //this.getTranGuid())
+		if (!tran)
 			throw new Error("can't call child: database is not in transaction ");
 			
 		var packet = { 
 			db : this.getGuid(),
-			tran : tran, //this.getTranGuid(),	
+			tran : tran,
 			async : 1,						// вызов асинхронный или синхронный
 			commit : commit ? 1 : 0,		// коммитить транзакцию или нет
 			deltas : deltas,				// массив дельт
 			calls : []						// массив удаленных вызовов
 		};		
-		var db = this.getController()._databases[dbGuid];	
-		
+		//var db = this.getController().getDb(dbGuid);
+		var that = this;
 		this.getController()._crc(function() {
-			db._execChild(packet);	
+			//db._execChild(packet);
+			that.getController()._callChild(dbGuid,packet);
 		});			
 	}
 	
@@ -443,22 +368,23 @@ class MemDataBase {
 	}
 
 	_onResolvePromise(val,result,num,tran) {
-	
 		var that=this;
-		/*
-		if (this._name!="MasterBase")
-			console.log("!!! ONRESOLVE : ",this._name, this._curTranGuid,val);
-			*/
-		if (val==0) 
-			that._fresolveAndGo(result);
+		if (val==0) {
+			if (that._fresolveUserCode) {
+				that._fresolveUserCode(result);
+				delete that._fresolveUserCode;
+			}
+			else
+				throw new Error("can't resolve in _onResolvePromise : ", this._name);
+		}
 			//setTimeout(function() { that._fresolveAndGo(result); },0);
 	}
 			
 			
 	_exec(packet,dbgInfo) {
 		var that = this, funcresult = null;
-		if (packet.deltas && packet.deltas.length>0 && packet.commit)
-			console.log("FFFFFFFFFFFFFFFFFFFFFFFFFFF");
+		//if (packet.deltas && packet.deltas.length>0 && packet.commit)
+		//	console.log("FFFFFFFFFFFFFFFFFFFFFFFFFFF");
 		if (packet.tran != this.getTranGuid())
 			throw new Error("can't execute packet: wrong transaction db:",this.getTranGuid(),"packet ",packet.tran,packet );
 		
@@ -494,26 +420,22 @@ class MemDataBase {
 				p = that._genericExec(rc.name,rc.arg);
 	
 			var p2 = new Promise(function(resolve,reject) {
-					that._fresolveAndGo = resolve;
+					that._fresolveUserCode = resolve;
 				});
 						
 			return p2.then( function(res) {
 				var ds = that._genSendDeltas();					// сгенерировать и разослать дельты после выполнения методов
 				if (that.getParentGuid() && (ds.length>0 || that._calls.length>0) )
 					return that._remoteClient(true,false,ds).then(function(res1) {
-						return res; // todo усовершенствовать для случая каскадных изменений
+						return res; 
 					});
-				else {
-					// todo ПЕРЕДЕЛАТЬ - ЭТО НЕПРАВИЛЬНО
-					//that._genSendDeltas();					// сгенерировать и разослать дельты после выполнения методов
+				else 
 					return res;
-				}
 			});	
 
 		}
 		else
 			return new Promise(function(resolve,reject) { resolve(); });
-
 	}
 
 	_genericRemoteCall(name, argObj) {
@@ -566,6 +488,7 @@ class MemDataBase {
 
 		var subDbGuid = objsub.subDbGuid, rootGuids = objsub.rootGuids;
 		var res = [];
+
 		for (var i=0; i<rootGuids.length; i++) {
 			var root = this.getRoot(rootGuids[i]);
 			res.push(root);

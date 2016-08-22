@@ -24,12 +24,14 @@ function prt(contr) {
 	var dbGuids = contr.getDbGuids();
 	for (var i=0; i<dbGuids.length; i++) {
 		var curDb = contr.getDb(dbGuids[i]);
-		var rootGuids = curDb.getRootGuids();
-		console.log("DB "+curDb._name+" "+curDb.getGuid()+"   TRAN:"+curDb.getTranGuid()+"   Queue:"+curDb._queue.length);
-		for (var j=0; j<rootGuids.length; j++) {
-			var cr = curDb.getRoot(rootGuids[j]);
-			var str = rootGuids[j]+" "+cr.getData(0)+" "+cr.getData(1)+" "+cr.getData(2)+" "+cr.getData(3)+" "+cr.getData(4);
-			console.log(str);
+		if (curDb) {
+			var rootGuids = curDb.getRootGuids();
+			console.log("DB "+curDb._name+" "+curDb.getGuid()+"   TRAN:"+curDb.getTranGuid()+"   Queue:"+curDb._queue.length);
+			for (var j=0; j<rootGuids.length; j++) {
+				var cr = curDb.getRoot(rootGuids[j]);
+				var str = rootGuids[j]+" "+cr.getData(0)+" "+cr.getData(1)+" "+cr.getData(2)+" "+cr.getData(3)+" "+cr.getData(4);
+				console.log(str);
+			}
 		}
 	}
 }
@@ -52,7 +54,44 @@ function setPar(db,idx,val) {
 	}).then(function() { console.log("Done setParent"); });
 }
 
+function test2c() {
+	controller = new MemDbController();		//  контроллеры базы
+	c2 = new MemDbController();	
+	master = new MemDataBase(controller,undefined,{ name: "MasterBase"});  	// создаем корневую базу
+	connector = new MemDbLocalConnect();
+	connector.regController(controller);
+	c2.connect({ guid: controller.getGuid(), connector: connector, dbGuids: [master.getGuid()] }).
+	then(function() {
+		chld1 = new MemDataBase(c2,master.getGuid(),{name: "Level1_Db1"});
+	}).
+	then(function() {
+		
+		var userFunc1 = function() {
+				console.log("INIT MASTER BASE");
+				r1 = master.addMasterRoot({1: 34, 2: 99 }, { name: "MasterBase_Root1"} );
+				gr1 = r1;
+				r1._print();
+				r1.setData(1,345,master.getTranGuid());
+				
+			};
 
+		var p = master.run(userFunc1).then( function() { 
+		
+		console.log("END");
+		
+		//setTimeout(function() {
+		return chld1.run(function() {
+			var r2 = chld1.addMasterRoot({ 2: 1, 3: 3, 4: 5} , {name: "Level1_Db1_Root1"} ); 
+			chld1.subscribeRoots([r1.getGuid()]).then(function(res) {
+					console.log("Resolve subscribe ",res);
+					var r1_c = chld1.getRoot(r1.getGuid());
+					r1_c.setData(4,888,chld1.getTranGuid());
+					r1_c.setData(1,100,chld1.getTranGuid());
+				});
+			}).then( function() { console.log("zzzzzzzzzzz END2"); prt(controller); }); 
+		});
+	});
+}
 
 function genTest() {
 	
@@ -338,22 +377,14 @@ function test5() {
 }		
 
 
-var controller = new MemDbController();		// создаем контроллер базы
-var db = new MemDataBase(controller,undefined,{ name: "MasterBase"});  	// создаем корневую базу
+var controller, c2;
+var connector;
 var master;
 var chld1;
 var chld2,chld2_2;
 var p1
-/*
-db.run(function() {
 
- p1 = new DbPromise(db,function(resolve,reject) {
-	resolve();
-});
-p1.then(function(res) { console.log("OK"); });
-});
-*/
-test6();
+test2c();
 //genTest();
 //testCascadeCallbacks();
 
